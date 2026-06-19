@@ -73,7 +73,10 @@ export class PermissionACL {
     const abs = path.resolve(targetPath);
 
     // 1. ตรวจว่าอยู่ใน granted folder ไหม
-    const inGranted = this.grantedFolders.some((folder) => abs.startsWith(folder));
+    const inGranted = this.grantedFolders.some((folder) => {
+      const relative = path.relative(folder, abs);
+      return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+    });
     if (!inGranted) {
       return {
         allowed: false,

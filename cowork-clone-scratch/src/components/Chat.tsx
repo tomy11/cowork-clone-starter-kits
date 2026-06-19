@@ -36,7 +36,7 @@ export function Chat({ folder }: Props) {
     setEvents([]);
 
     try {
-      const result = await invoke("run", {
+      const result = await invoke<{ events: Event[] }>("run", {
         message: input,
         history: messages,
       });

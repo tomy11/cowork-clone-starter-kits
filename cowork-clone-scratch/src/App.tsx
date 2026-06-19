@@ -4,7 +4,7 @@
  * ใช้ Tauri shell + stdio RPC ไปยัง Node sidecar
  */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { Chat } from "./components/Chat";
 import { Sidebar } from "./components/Sidebar";
 import { invoke } from "@tauri-apps/api/core";
@@ -16,15 +16,20 @@ export default function App() {
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
 
   useEffect(() => {
-    // Init: load granted folders, skills, tools
-    invoke("list_granted_folders").then((res: any) => {
-      setGrantedFolders(res.folders ?? []);
-    });
-    invoke("list_skills").then((res: any) => {
-      setSkills(res.skills ?? []);
-    });
-    invoke("list_tools").then((res: any) => {
-      setTools(res.tools ?? []);
+    async function initialize() {
+      await invoke("spawn_sidecar");
+      const [foldersResult, skillsResult, toolsResult] = await Promise.all([
+        invoke<{ folders: string[] }>("list_granted_folders"),
+        invoke<{ skills: any[] }>("list_skills"),
+        invoke<{ tools: string[] }>("list_tools"),
+      ]);
+      setGrantedFolders(foldersResult.folders ?? []);
+      setSkills(skillsResult.skills ?? []);
+      setTools(toolsResult.tools ?? []);
+    }
+
+    initialize().catch((error) => {
+      console.error("Failed to initialize sidecar", error);
     });
   }, []);
 

@@ -12,43 +12,32 @@
 - **Storage:** SQLite (better-sqlite3) + JSON config
 - **IPC:** Tauri commands (frontend ↔ Rust ↔ Node sidecar)
 
-## เป้าหมาย MVP (2 สัปดาห์)
-
-- [ ] Folder access + permission scope
-- [ ] Chat UI + LLM streaming
-- [ ] Single agent + tool use
-- [ ] File read/write tool
-- [ ] Sub-agent dispatcher (parallel)
-- [ ] Skills loader (Anthropic spec)
-- [ ] MCP support (basic)
-- [ ] Audit log + confirm dialog
-- [ ] Cross-platform build (Mac/Win/Linux)
-
 ## Quick start
 
 ```bash
-pnpm install
-pnpm dev          # รัน Tauri dev mode
-pnpm build        # build production
+cd cowork-clone-scratch
+cp .env.example .env  # แล้วใส่ API key ของ provider ที่เลือก
+npm install
+npm test
+npm run build
+npm run tauri:dev
 ```
 
 ## โครงสร้าง
 
 ```
-src/                 # Frontend (React + TS)
-  app.tsx
+src/                 # Frontend (React + TypeScript)
+  main.tsx
+  App.tsx
   components/
     Chat.tsx
-    FileTree.tsx
-    PermissionDialog.tsx
-    AgentList.tsx
+    Sidebar.tsx
 
 src-tauri/           # Rust shell
   src/
     main.rs
-    commands/
 
-core/                # Node sidecar (pure TS, ไม่ผูก Tauri)
+core/                # Node sidecar
   agent/
     orchestrator.ts
     subagent.ts
@@ -62,15 +51,10 @@ core/                # Node sidecar (pure TS, ไม่ผูก Tauri)
     audit.ts
   skills/
     loader.ts
-    anthropic-spec.ts
-  storage/
-    sqlite.ts
 
 skills/              # Anthropic Skill spec compatible
   webapp-testing/
-  docx/
-  pptx/
-  ...
+  test-master/
 ```
 
 ## LLM Providers ที่รองรับ
@@ -78,4 +62,4 @@ skills/              # Anthropic Skill spec compatible
 - Anthropic Claude (native API)
 - OpenAI / OpenAI-compatible (GPT, Gemini, Ollama, GLM, etc.)
 
-ใส่ API key ใน Settings → เก็บใน OS keychain ผ่าน Tauri
+กำหนด provider และ API key ใน `cowork-clone-scratch/.env` โดยใช้ `.env.example` เป็นแม่แบบ

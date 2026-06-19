@@ -50,8 +50,8 @@ export class SkillsLoader {
           const raw = await fs.readFile(skillMd, "utf-8");
           const meta = this.parseFrontmatter(raw);
           skills.push({
-            name: meta.name ?? e.name,
-            description: meta.description ?? "",
+            name: typeof meta.name === "string" ? meta.name : e.name,
+            description: typeof meta.description === "string" ? meta.description : "",
             path: path.join(this.skillsRoot, e.name),
             raw: meta,
           });
@@ -91,8 +91,8 @@ export class SkillsLoader {
     }
 
     const skill: Skill = {
-      name: meta.name ?? name,
-      description: meta.description ?? "",
+      name: typeof meta.name === "string" ? meta.name : name,
+      description: typeof meta.description === "string" ? meta.description : "",
       path: skillDir,
       raw: meta,
       instructions: body,

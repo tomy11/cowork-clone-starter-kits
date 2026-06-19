@@ -11,8 +11,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "sidecar": "tsx core/index.ts",
-    "test": "vitest",
+    "sidecar": "node --env-file=.env --import tsx core/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "eslint . --ext .ts,.tsx"
   },
   "dependencies": {

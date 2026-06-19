@@ -12,7 +12,7 @@
  */
 
 import { SubAgent, type SubAgentTask, type SubAgentResult } from "./subagent.js";
-import type { LLMProvider, Message, Tool } from "../llm/provider.js";
+import type { LLMProvider, Message } from "../llm/provider.js";
 import type { PermissionACL } from "../permissions/acl.js";
 import type { AuditLog } from "../permissions/audit.js";
 import { ToolRegistry } from "./tools/registry.js";
@@ -74,7 +74,7 @@ export class Orchestrator {
 
     // Step 3: Synthesize final answer
     yield { kind: "thinking", content: "Synthesizing final answer..." };
-    const final = await this.synthesize(userMessage, history, plan, results);
+    const final = await this.synthesize(userMessage, history, results);
     yield { kind: "final", content: final };
   }
 
@@ -206,7 +206,6 @@ export class Orchestrator {
   private async synthesize(
     userMessage: string,
     history: Message[],
-    plan: PlanStep[],
     results: SubAgentResult[],
   ): Promise<string> {
     const summary = results

@@ -8,7 +8,6 @@
  */
 
 import { Orchestrator } from "./agent/orchestrator.js";
-import { SubAgent } from "./agent/subagent.js";
 import { ToolRegistry } from "./agent/tools/registry.js";
 import { builtInFileTools } from "./agent/tools/file-tools.js";
 import { PermissionACL } from "./permissions/acl.js";
@@ -114,7 +113,7 @@ async function handle(req: RpcRequest): Promise<RpcResponse> {
       }
 
       case "audit_recent":
-        return { id: req.id, result: { entries: audit.recent(req.params.limit) };
+        return { id: req.id, result: { entries: audit.recent(req.params.limit) } };
 
       case "ping":
         return { id: req.id, result: { pong: true, version: "0.1.0" } };

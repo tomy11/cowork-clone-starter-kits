@@ -1,140 +1,177 @@
-// Tauri shell — spawn Node sidecar, bridge stdio RPC to frontend
+// Tauri shell — spawn the Node sidecar and bridge JSON-RPC over stdio.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 use tauri::State;
 
-#[derive(Default)]
-struct SidecarState {
-    child: Mutex<Option<std::process::Child>>,
+struct SidecarProcess {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+impl Drop for SidecarProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[derive(Default)]
+struct SidecarState {
+    process: Mutex<Option<SidecarProcess>>,
+}
+
+#[derive(Serialize, Debug)]
 struct RpcRequest {
     id: String,
     method: String,
-    #[serde(default)]
     params: serde_json::Value,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 struct RpcResponse {
     id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<serde_json::Value>,
+    event: Option<serde_json::Value>,
 }
 
 #[tauri::command]
-fn spawn_sidecar(state: State<SidecarState>) -> Result<(), String> {
-    let mut guard = state.child.lock().unwrap();
+fn spawn_sidecar(state: State<'_, SidecarState>) -> Result<(), String> {
+    let mut guard = state.process.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
         return Ok(());
     }
 
-    // Detect Node binary
-    let node_cmd = if cfg!(target_os = "windows") { "node.cmd" } else { "node" };
-
-    // Path to compiled sidecar
-    let sidecar_path = std::env::current_exe()
-        .map_err(|e| e.to_string())?
+    let npm = if cfg!(target_os = "windows") {
+        "npm.cmd"
+    } else {
+        "npm"
+    };
+    let project_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
-        .join("sidecar")
-        .join("index.js");
+        .ok_or("Could not locate project directory")?;
 
-    let mut child = Command::new(node_cmd)
-        .arg(sidecar_path)
+    let mut child = Command::new(npm)
+        .args(["--silent", "run", "sidecar"])
+        .current_dir(project_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
+        .map_err(|e| format!("Failed to spawn sidecar: {e}"))?;
 
-    *guard = Some(child);
+    let stdin = child.stdin.take().ok_or("Sidecar stdin is unavailable")?;
+    let stdout = child.stdout.take().ok_or("Sidecar stdout is unavailable")?;
+    *guard = Some(SidecarProcess {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+    });
     Ok(())
+}
+
+fn call_sidecar_inner(
+    state: &State<'_, SidecarState>,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut guard = state.process.lock().map_err(|e| e.to_string())?;
+    let process = guard.as_mut().ok_or("Sidecar not running")?;
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let request = RpcRequest {
+        id: request_id.clone(),
+        method: method.to_string(),
+        params,
+    };
+
+    let request_json = serde_json::to_string(&request).map_err(|e| e.to_string())?;
+    writeln!(process.stdin, "{request_json}").map_err(|e| e.to_string())?;
+    process.stdin.flush().map_err(|e| e.to_string())?;
+
+    loop {
+        let mut line = String::new();
+        let bytes = process
+            .stdout
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?;
+        if bytes == 0 {
+            return Err("Sidecar closed its output stream".to_string());
+        }
+
+        let response: RpcResponse = serde_json::from_str(&line)
+            .map_err(|e| format!("Invalid sidecar response: {e}"))?;
+        if response.id != request_id {
+            continue;
+        }
+        if response.event.is_some() {
+            continue;
+        }
+        if let Some(error) = response.error {
+            return Err(error.to_string());
+        }
+        return Ok(response.result.unwrap_or(serde_json::Value::Null));
+    }
 }
 
 #[tauri::command]
 fn call_sidecar(
-    state: State<SidecarState>,
+    state: State<'_, SidecarState>,
     method: String,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let mut guard = state.child.lock().unwrap();
-    let child = guard.as_mut().ok_or("Sidecar not running")?;
-
-    let stdin = child.stdin.as_mut().ok_or("No stdin")?;
-    let stdout = child.stdout.as_mut().ok_or("No stdout")?;
-
-    let req = RpcRequest {
-        id: uuid::Uuid::new_v4().to_string(),
-        method,
-        params,
-    };
-
-    let req_str = serde_json::to_string(&req).map_err(|e| e.to_string())? + "\n";
-    stdin.write_all(req_str.as_bytes()).map_err(|e| e.to_string())?;
-    stdin.flush().map_err(|e| e.to_string())?;
-
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    reader.read_line(&mut line).map_err(|e| e.to_string())?;
-
-    let resp: RpcResponse = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-    if let Some(err) = resp.error {
-        return Err(err.to_string());
-    }
-    Ok(resp.result.unwrap_or(serde_json::Value::Null))
+    call_sidecar_inner(&state, &method, params)
 }
 
 #[tauri::command]
-fn grant_folder(folder: String) -> Result<serde_json::Value, String> {
-    call_sidecar_sync("grant_folder", serde_json::json!({ "folder": folder }))
+fn grant_folder(
+    state: State<'_, SidecarState>,
+    folder: String,
+) -> Result<serde_json::Value, String> {
+    call_sidecar_inner(
+        &state,
+        "grant_folder",
+        serde_json::json!({ "folder": folder }),
+    )
 }
 
 #[tauri::command]
-fn list_granted_folders() -> Result<serde_json::Value, String> {
-    call_sidecar_sync("list_granted_folders", serde_json::json!({}))
+fn list_granted_folders(state: State<'_, SidecarState>) -> Result<serde_json::Value, String> {
+    call_sidecar_inner(&state, "list_granted_folders", serde_json::json!({}))
 }
 
 #[tauri::command]
-fn list_skills() -> Result<serde_json::Value, String> {
-    call_sidecar_sync("list_skills", serde_json::json!({}))
+fn list_skills(state: State<'_, SidecarState>) -> Result<serde_json::Value, String> {
+    call_sidecar_inner(&state, "list_skills", serde_json::json!({}))
 }
 
 #[tauri::command]
-fn list_tools() -> Result<serde_json::Value, String> {
-    call_sidecar_sync("list_tools", serde_json::json!({}))
+fn list_tools(state: State<'_, SidecarState>) -> Result<serde_json::Value, String> {
+    call_sidecar_inner(&state, "list_tools", serde_json::json!({}))
 }
 
 #[tauri::command]
-fn run(message: String, history: Vec<serde_json::Value>) -> Result<serde_json::Value, String> {
-    call_sidecar_sync(
+fn run(
+    state: State<'_, SidecarState>,
+    message: String,
+    history: Vec<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    call_sidecar_inner(
+        &state,
         "run",
         serde_json::json!({ "message": message, "history": history }),
     )
 }
 
-// Helper — wraps the state call (Tauri command pattern)
-fn call_sidecar_sync(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
-    // This is a placeholder — actual implementation uses Tauri State
-    // In real code, refactor to share state between commands
-    Err("Use the State-based command directly".to_string())
-}
-
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(SidecarState::default())
-        .setup(|_app| {
-            // Auto-spawn sidecar on startup
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
             spawn_sidecar,
             call_sidecar,
@@ -145,5 +182,5 @@ fn main() {
             run,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .expect("error while running Tauri application");
 }

@@ -5,7 +5,7 @@
  * รันแบบ streaming event
  */
 
-import type { LLMProvider, Message, ToolUse } from "../llm/provider.js";
+import type { LLMProvider, Message } from "../llm/provider.js";
 import type { PermissionACL } from "../permissions/acl.js";
 import type { AuditLog } from "../permissions/audit.js";
 import type { ToolRegistry } from "./tools/registry.js";
