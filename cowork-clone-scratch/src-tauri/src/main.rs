@@ -160,11 +160,16 @@ fn run(
     state: State<'_, SidecarState>,
     message: String,
     history: Vec<serde_json::Value>,
+    workspace: Option<String>,
 ) -> Result<serde_json::Value, String> {
     call_sidecar_inner(
         &state,
         "run",
-        serde_json::json!({ "message": message, "history": history }),
+        serde_json::json!({
+            "message": message,
+            "history": history,
+            "workspace": workspace,
+        }),
     )
 }
 

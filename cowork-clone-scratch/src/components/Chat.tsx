@@ -39,6 +39,7 @@ export function Chat({ folder }: Props) {
       const result = await invoke<{ events: Event[] }>("run", {
         message: input,
         history: messages,
+        workspace: folder,
       });
 
       // Events already streamed via stdout; result.events is the final list

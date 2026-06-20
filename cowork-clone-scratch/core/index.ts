@@ -15,6 +15,7 @@ import { AuditLog } from "./permissions/audit.js";
 import { ClaudeProvider } from "./llm/claude.js";
 import { OpenAICompatProvider } from "./llm/openai-compatible.js";
 import { SkillsLoader } from "./skills/loader.js";
+import { withWorkspaceContext } from "./workspace-context.js";
 import * as path from "node:path";
 
 // ---------- Setup ----------
@@ -102,7 +103,8 @@ async function handle(req: RpcRequest): Promise<RpcResponse> {
 
       case "run": {
         const events: any[] = [];
-        for await (const ev of orchestrator.run(req.params.message, req.params.history ?? [])) {
+        const message = withWorkspaceContext(req.params.message, req.params.workspace);
+        for await (const ev of orchestrator.run(message, req.params.history ?? [])) {
           events.push(ev);
           // stream event แต่ละ event ออกมาทันที
           process.stdout.write(
