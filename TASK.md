@@ -19,6 +19,7 @@
 - [x] Persistent workspaces, conversations, messages, and task status
 - [x] Live sub-agent progress and cooperative/provider cancellation
 - [x] Planner-selected skills injected into sub-agents
+- [x] Portable multi-agent pipeline core and coding workflow preset
 
 ## Release follow-up
 
