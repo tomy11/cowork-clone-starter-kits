@@ -53,7 +53,7 @@ export class AuditLog {
       .run(
         entry.agentId,
         entry.tool,
-        JSON.stringify(entry.args ?? {}),
+        JSON.stringify(redactSensitive(entry.args ?? {})),
         entry.decision,
         entry.reason ?? null,
       );
@@ -75,4 +75,26 @@ export class AuditLog {
   close() {
     this.db.close();
   }
+}
+
+const SENSITIVE_KEY = /(api[_-]?key|authorization|cookie|password|secret|token)/i;
+
+export function redactSensitive(value: unknown, key = ""): unknown {
+  if (SENSITIVE_KEY.test(key)) return "[REDACTED]";
+  if (key === "content" && typeof value === "string") return `[REDACTED CONTENT: ${value.length} chars]`;
+  if (typeof value === "string") {
+    return value
+      .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [REDACTED]")
+      .replace(/([?&](?:key|token|secret|password)=)[^&\s]+/gi, "$1[REDACTED]");
+  }
+  if (Array.isArray(value)) return value.map((item) => redactSensitive(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([childKey, childValue]) => [
+        childKey,
+        redactSensitive(childValue, childKey),
+      ]),
+    );
+  }
+  return value;
 }

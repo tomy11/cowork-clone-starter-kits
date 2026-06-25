@@ -41,7 +41,7 @@ export class ClaudeProvider implements LLMProvider {
       temperature: opts.temperature ?? 0.7,
       system: opts.system ?? "",
       messages: this.formatMessages(opts.messages) as any,
-    });
+    }, { signal: opts.signal });
 
     return resp.content
       .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -57,7 +57,7 @@ export class ClaudeProvider implements LLMProvider {
       system: opts.system ?? "",
       tools: this.formatTools(opts.tools) as any,
       messages: this.formatMessages(opts.messages) as any,
-    });
+    }, { signal: opts.signal });
 
     return this.parseResponse(resp);
   }

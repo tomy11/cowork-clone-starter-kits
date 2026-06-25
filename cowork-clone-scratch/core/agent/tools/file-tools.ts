@@ -50,7 +50,7 @@ const writeFile: ToolImpl = {
     const target = String(args.path);
     const decision = await ctx.acl.check("write_file", { path: target, operation: "write" });
     if (!decision.allowed) throw new Error(decision.reason);
-    if (decision.requiresConfirm) {
+    if (decision.requiresConfirm && !ctx.confirmationApproved) {
       throw new Error(`CONFIRM_REQUIRED: ${decision.confirmPrompt}`);
     }
 
@@ -119,11 +119,11 @@ const moveFile: ToolImpl = {
     const to = String(args.to);
     const decFrom = await ctx.acl.check("move_file", { path: from, operation: "write" });
     if (!decFrom.allowed) throw new Error(`Source: ${decFrom.reason}`);
-    if (decFrom.requiresConfirm) throw new Error(`CONFIRM_REQUIRED: Move from ${from}?`);
+    if (decFrom.requiresConfirm && !ctx.confirmationApproved) throw new Error(`CONFIRM_REQUIRED: Move from ${from}?`);
 
     const decTo = await ctx.acl.check("move_file", { path: to, operation: "write" });
     if (!decTo.allowed) throw new Error(`Destination: ${decTo.reason}`);
-    if (decTo.requiresConfirm) throw new Error(`CONFIRM_REQUIRED: Move to ${to}?`);
+    if (decTo.requiresConfirm && !ctx.confirmationApproved) throw new Error(`CONFIRM_REQUIRED: Move to ${to}?`);
 
     await fs.mkdir(path.dirname(to), { recursive: true });
     await fs.rename(from, to);
@@ -146,7 +146,7 @@ const deleteFile: ToolImpl = {
     const target = String(args.path);
     const decision = await ctx.acl.check("delete_file", { path: target, operation: "delete" });
     if (!decision.allowed) throw new Error(decision.reason);
-    if (decision.requiresConfirm) {
+    if (decision.requiresConfirm && !ctx.confirmationApproved) {
       throw new Error(`CONFIRM_REQUIRED: Delete ${target}? This is destructive.`);
     }
 

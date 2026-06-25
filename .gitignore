@@ -6,11 +6,13 @@
 # JavaScript / TypeScript
 node_modules/
 dist/
+sidecar-dist/
 coverage/
 *.tsbuildinfo
 
 # Rust / Tauri
 target/
+**/src-tauri/binaries/cowork-sidecar-*
 
 # Logs and temporary files
 *.log
@@ -22,4 +24,3 @@ target/
 .idea/
 .vscode/
 *.swp
-

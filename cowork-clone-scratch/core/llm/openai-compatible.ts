@@ -44,7 +44,7 @@ export class OpenAICompatProvider implements LLMProvider {
       max_tokens: opts.maxTokens ?? 2048,
       temperature: opts.temperature ?? 0.7,
       messages: this.formatMessages(opts.messages, opts.system),
-    });
+    }, { signal: opts.signal });
     return resp.choices[0]?.message?.content ?? "";
   }
 
@@ -55,7 +55,7 @@ export class OpenAICompatProvider implements LLMProvider {
       temperature: opts.temperature ?? 0.7,
       messages: this.formatMessages(opts.messages, opts.system),
       tools: this.formatTools(opts.tools),
-    });
+    }, { signal: opts.signal });
 
     return this.parseResponse(resp);
   }

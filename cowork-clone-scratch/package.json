@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=20.19.0" },
   "description": "Multi-agent desktop coworker — built from scratch",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:sidecar": "node scripts/package-sidecar.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -18,13 +20,14 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "better-sqlite3": "^11.3.0",
     "openai": "^4.70.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "yaml": "^2.5.1",
-    "zod": "^3.23.8"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.11.0",
@@ -32,10 +35,22 @@
     "@types/better-sqlite3": "^7.6.11",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "@yao-pkg/pkg": "^6.20.0",
+    "esbuild": "^0.28.1",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3",
-    "vite": "^5.4.10",
-    "vitest": "^2.1.3"
+    "vite": "^8.0.16",
+    "vitest": "^4.1.9"
+  },
+  "pkg": {
+    "assets": [
+      "node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+    ],
+    "scripts": [
+      "node_modules/better-sqlite3/lib/**/*.js",
+      "node_modules/bindings/bindings.js",
+      "node_modules/file-uri-to-path/index.js"
+    ]
   }
 }

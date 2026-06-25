@@ -4,13 +4,29 @@
 
 ## Stack
 
-- **Runtime:** Node.js 20+ / TypeScript
+- **Runtime:** Node.js 20.19+ / TypeScript
 - **Desktop shell:** Tauri (Rust) + web frontend (React/Vite)
 - **LLM:** BYOK — Claude / OpenAI / Gemini / Ollama (ผ่าน OpenAI-compatible API)
 - **Agent framework:** เขียนเอง (lightweight) — ใช้ Anthropic Skill spec
 - **Sandbox:** Folder ACL + permission dialog (in-process ใน MVP, OS-level ใน v2)
 - **Storage:** SQLite (better-sqlite3) + JSON config
 - **IPC:** Tauri commands (frontend ↔ Rust ↔ Node sidecar)
+
+## Runtime capabilities
+
+- Real-time agent, tool, and permission events from the Node sidecar to React
+- Parallel sub-agents with live progress and cancellation
+- Approve/deny flow that pauses and resumes destructive tool calls
+- Persistent workspaces and conversations in SQLite
+- Planner-selected skills loaded into the relevant sub-agent only
+- MCP stdio servers with namespaced tools and confirmation by default
+- Standalone packaged sidecar and installer workflows for macOS, Windows, and Linux
+
+## MCP
+
+กำหนด local MCP servers ใน `cowork-clone-scratch/mcp.json` แล้วตั้ง `enabled: true` เพื่อเชื่อมอัตโนมัติเมื่อเริ่ม task ตัวแปร `${workspace}` จะถูกแทนด้วย workspace ที่ผู้ใช้ grant แล้ว และ MCP tools จะถามยืนยันก่อนทำงานโดย default
+
+ดูรูปแบบ config และ security policy ใน [cowork-clone-scratch/MCP.md](./cowork-clone-scratch/MCP.md)
 
 ## Quick start
 

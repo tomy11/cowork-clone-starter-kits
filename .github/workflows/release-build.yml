@@ -1,0 +1,47 @@
+name: Release installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+defaults:
+  run:
+    working-directory: cowork-clone-scratch
+
+jobs:
+  bundle:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            artifact: macos
+          - os: windows-2022
+            artifact: windows
+          - os: ubuntu-22.04
+            artifact: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cowork-clone-scratch/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cowork-clone-scratch/src-tauri
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: npm ci --legacy-peer-deps
+      - run: npm run tauri:build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cowork-clone-${{ matrix.artifact }}
+          path: cowork-clone-scratch/src-tauri/target/release/bundle/**
+          if-no-files-found: error

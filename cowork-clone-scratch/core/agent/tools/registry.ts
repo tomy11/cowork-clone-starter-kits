@@ -10,12 +10,14 @@ import type { PermissionACL } from "../../permissions/acl.js";
 export type ToolContext = {
   agentId: string;
   acl: PermissionACL;
+  confirmationApproved?: boolean;
 };
 
 export type ToolImpl = {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+  requiresConfirmation?: boolean;
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<unknown>;
 };
 

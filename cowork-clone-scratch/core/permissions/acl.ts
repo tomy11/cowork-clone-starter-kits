@@ -6,6 +6,8 @@
  */
 
 import * as path from "node:path";
+import * as fs from "node:fs";
+import { realpath } from "node:fs/promises";
 
 export type PermissionRule = {
   pattern: string; // glob pattern สำหรับ path
@@ -34,8 +36,8 @@ export class PermissionACL {
    * Grant การเข้าถึง folder + ใส่ default rule
    */
   grantFolder(folder: string, defaults: Partial<PermissionRule> = {}) {
-    const abs = path.resolve(folder);
-    this.grantedFolders.push(abs);
+    const abs = this.canonicalizeGrantedFolder(folder);
+    if (!this.grantedFolders.includes(abs)) this.grantedFolders.push(abs);
     this.rules.push({
       pattern: abs + "/**",
       read: "allow",
@@ -46,7 +48,7 @@ export class PermissionACL {
   }
 
   revokeFolder(folder: string) {
-    const abs = path.resolve(folder);
+    const abs = this.canonicalizeGrantedFolder(folder);
     this.grantedFolders = this.grantedFolders.filter((f) => f !== abs);
     this.rules = this.rules.filter((r) => !r.pattern.startsWith(abs));
   }
@@ -70,7 +72,16 @@ export class PermissionACL {
       return { allowed: false, requiresConfirm: false, reason: "No path provided" };
     }
 
-    const abs = path.resolve(targetPath);
+    let abs: string;
+    try {
+      abs = await this.canonicalizeTarget(targetPath);
+    } catch (error) {
+      return {
+        allowed: false,
+        requiresConfirm: false,
+        reason: `Unable to resolve path safely: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
 
     // 1. ตรวจว่าอยู่ใน granted folder ไหม
     const inGranted = this.grantedFolders.some((folder) => {
@@ -135,13 +146,50 @@ export class PermissionACL {
     // Simple glob: pattern ลงท้าย /** = recursive
     if (pattern.endsWith("/**")) {
       const base = pattern.slice(0, -3);
-      return target.startsWith(base);
+      const relative = path.relative(base, target);
+      return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
     }
     if (pattern.endsWith("*")) {
       const prefix = pattern.slice(0, -1);
       return target.startsWith(prefix);
     }
     return target === pattern;
+  }
+
+  private canonicalizeGrantedFolder(folder: string) {
+    const absolute = path.resolve(folder);
+    let candidate = absolute;
+    const missingSegments: string[] = [];
+    while (true) {
+      try {
+        return path.resolve(fs.realpathSync.native(candidate), ...missingSegments);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return absolute;
+        const parent = path.dirname(candidate);
+        if (parent === candidate) return absolute;
+        missingSegments.unshift(path.basename(candidate));
+        candidate = parent;
+      }
+    }
+  }
+
+  private async canonicalizeTarget(target: string) {
+    const absolute = path.resolve(target);
+    let candidate = absolute;
+    const missingSegments: string[] = [];
+
+    while (true) {
+      try {
+        const resolved = await realpath(candidate);
+        return path.resolve(resolved, ...missingSegments);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const parent = path.dirname(candidate);
+        if (parent === candidate) return absolute;
+        missingSegments.unshift(path.basename(candidate));
+        candidate = parent;
+      }
+    }
   }
 
   listGrantedFolders(): string[] {

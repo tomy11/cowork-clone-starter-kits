@@ -1,31 +1,37 @@
-/**
- * React UI — Main App
- *
- * ใช้ Tauri shell + stdio RPC ไปยัง Node sidecar
- */
-
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Chat } from "./components/Chat";
 import { Sidebar } from "./components/Sidebar";
-import { invoke } from "@tauri-apps/api/core";
+import { Icon } from "./components/Icon";
+
+type SkillSummary = { name: string; description?: string };
+type McpServerSummary = { name: string; enabled: boolean; connected: boolean; tools: string[]; error?: string };
 
 export default function App() {
   const [grantedFolders, setGrantedFolders] = useState<string[]>([]);
-  const [skills, setSkills] = useState<any[]>([]);
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [tools, setTools] = useState<string[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServerSummary[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [chatKey, setChatKey] = useState(0);
+  const [resumeLatest, setResumeLatest] = useState(true);
 
   useEffect(() => {
     async function initialize() {
       await invoke("spawn_sidecar");
-      const [foldersResult, skillsResult, toolsResult] = await Promise.all([
+      const [foldersResult, skillsResult, toolsResult, mcpResult] = await Promise.all([
         invoke<{ folders: string[] }>("list_granted_folders"),
-        invoke<{ skills: any[] }>("list_skills"),
+        invoke<{ skills: SkillSummary[] }>("list_skills"),
         invoke<{ tools: string[] }>("list_tools"),
+        invoke<{ servers: McpServerSummary[] }>("call_sidecar", { method: "mcp_status", params: {} }),
       ]);
-      setGrantedFolders(foldersResult.folders ?? []);
+
+      const folders = foldersResult.folders ?? [];
+      setGrantedFolders(folders);
+      setSelectedFolder((current) => current ?? folders[0] ?? null);
       setSkills(skillsResult.skills ?? []);
       setTools(toolsResult.tools ?? []);
+      setMcpServers(mcpResult.servers ?? []);
     }
 
     initialize().catch((error) => {
@@ -33,31 +39,54 @@ export default function App() {
     });
   }, []);
 
+  function startNewTask() {
+    setResumeLatest(false);
+    setChatKey((key) => key + 1);
+  }
+
+  function selectFolder(folder: string | null) {
+    setSelectedFolder(folder);
+    setResumeLatest(true);
+    setChatKey((key) => key + 1);
+  }
+
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "system-ui" }}>
+    <div className="app-shell">
       <Sidebar
         grantedFolders={grantedFolders}
         skills={skills}
         tools={tools}
+        mcpServers={mcpServers}
         selectedFolder={selectedFolder}
-        onSelectFolder={setSelectedFolder}
+        onSelectFolder={selectFolder}
+        onFoldersChange={setGrantedFolders}
+        onNewTask={startNewTask}
       />
-      <main style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        <header
-          style={{
-            padding: "12px 16px",
-            borderBottom: "1px solid #333",
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-          }}
-        >
-          <h2 style={{ margin: 0, fontSize: 16 }}>Cowork Clone</h2>
-          {selectedFolder && (
-            <span style={{ color: "#888", fontSize: 13 }}>📁 {selectedFolder}</span>
-          )}
+
+      <main className="workspace">
+        <header className="topbar">
+          <div className="workspace-indicator">
+            {selectedFolder ? (
+              <>
+                <span className="status-dot" />
+                <span>{selectedFolder.split(/[\\/]/).pop()}</span>
+              </>
+            ) : (
+              <span>Select a workspace to begin</span>
+            )}
+          </div>
+          <div className="topbar-actions">
+            <button className="icon-button" aria-label="Task notes" title="Task notes">
+              <Icon name="document" size={17} />
+            </button>
+            <button className="download-button" type="button">
+              <Icon name="download" size={17} />
+              Export
+            </button>
+          </div>
         </header>
-        <Chat folder={selectedFolder} />
+
+        <Chat key={chatKey} folder={selectedFolder} resumeLatest={resumeLatest} />
       </main>
     </div>
   );

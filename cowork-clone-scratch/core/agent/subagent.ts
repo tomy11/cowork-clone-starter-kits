@@ -1,12 +1,5 @@
-/**
- * SubAgent
- *
- * Agent ตัวเล็กที่ทำ task เดียวจบ — ใช้ LLM + tools + permission
- * รันแบบ streaming event
- */
-
 import type { LLMProvider, Message } from "../llm/provider.js";
-import type { PermissionACL } from "../permissions/acl.js";
+import type { PermissionACL, PermissionDecision } from "../permissions/acl.js";
 import type { AuditLog } from "../permissions/audit.js";
 import type { ToolRegistry } from "./tools/registry.js";
 
@@ -14,6 +7,7 @@ export type SubAgentTask = {
   id: string;
   instruction: string;
   context?: string;
+  skillInstructions?: string;
 };
 
 export type SubAgentResult = {
@@ -22,6 +16,13 @@ export type SubAgentResult = {
   output: string;
   error?: string;
   toolCalls: number;
+};
+
+export type ConfirmationRequest = {
+  agentId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  prompt: string;
 };
 
 export type SubAgentEvent =
@@ -38,10 +39,12 @@ export type SubAgentConfig = {
   tools: ToolRegistry;
   systemPrompt?: string;
   maxToolRounds?: number;
+  signal?: AbortSignal;
+  requestConfirmation?: (request: ConfirmationRequest) => Promise<boolean>;
 };
 
 export class SubAgent {
-  private cfg: Required<SubAgentConfig>;
+  private cfg: SubAgentConfig & { systemPrompt: string; maxToolRounds: number };
 
   constructor(cfg: SubAgentConfig) {
     this.cfg = {
@@ -52,13 +55,16 @@ export class SubAgent {
   }
 
   async *run(task: SubAgentTask, history: Message[] = []): AsyncGenerator<SubAgentEvent> {
+    const skillContext = task.skillInstructions
+      ? `\n\nActive skill instructions:\n${task.skillInstructions}`
+      : "";
     const messages: Message[] = [
       ...history,
       {
         role: "user",
         content: task.context
-          ? `${task.context}\n\n---\n\nSub-task ของคุณ: ${task.instruction}\n\nตอบเป็น concise report เมื่อทำเสร็จ — ไม่ต้องสวยงาม ขอให้ครบถ้วน`
-          : `Task: ${task.instruction}\n\nตอบเป็น concise report เมื่อทำเสร็จ`,
+          ? `${task.context}\n\n---\n\nSub-task ของคุณ: ${task.instruction}${skillContext}\n\nตอบเป็น concise report เมื่อทำเสร็จ — ไม่ต้องสวยงาม ขอให้ครบถ้วน`
+          : `Task: ${task.instruction}${skillContext}\n\nตอบเป็น concise report เมื่อทำเสร็จ`,
       },
     ];
 
@@ -67,133 +73,137 @@ export class SubAgent {
 
     try {
       for (let round = 0; round < this.cfg.maxToolRounds; round++) {
-        const tools = this.cfg.tools.list();
-
+        this.throwIfAborted();
         const resp = await this.cfg.llm.chatWithTools({
           messages,
           system: this.cfg.systemPrompt,
-          tools,
+          tools: this.cfg.tools.list(),
+          signal: this.cfg.signal,
         });
+        this.throwIfAborted();
 
-        // เพิ่ม assistant message
-        messages.push({
-          role: "assistant",
-          content: resp.text ?? "",
-          toolUses: resp.toolUses,
-        });
+        messages.push({ role: "assistant", content: resp.text ?? "", toolUses: resp.toolUses });
+        if (resp.text) yield { kind: "content", content: resp.text };
 
-        if (resp.text) {
-          yield { kind: "content", content: resp.text };
-        }
-
-        // ถ้าไม่มี tool call → จบ
         if (!resp.toolUses || resp.toolUses.length === 0) {
           yield {
             kind: "done",
-            result: {
-              agentId: task.id,
-              success: true,
-              output: resp.text ?? "",
-              toolCalls: toolCallCount,
-            },
+            result: { agentId: task.id, success: true, output: resp.text ?? "", toolCalls: toolCallCount },
           };
           return;
         }
 
-        // Execute tools
         const toolResults: Array<{ tool_use_id: string; content: string; is_error?: boolean }> = [];
 
-        for (const tu of resp.toolUses) {
-          if (usedToolIds.has(tu.id)) {
-            // Avoid infinite loop
+        for (const toolUse of resp.toolUses) {
+          this.throwIfAborted();
+          if (usedToolIds.has(toolUse.id)) {
             toolResults.push({
-              tool_use_id: tu.id,
+              tool_use_id: toolUse.id,
               content: "Error: tool already used, skipping duplicate",
               is_error: true,
             });
             continue;
           }
-          usedToolIds.add(tu.id);
+
+          usedToolIds.add(toolUse.id);
           toolCallCount++;
+          yield { kind: "tool_call", name: toolUse.name, args: toolUse.input };
 
-          yield { kind: "tool_call", name: tu.name, args: tu.input };
-
-          // Permission check
-          const permResult = await this.cfg.acl.check(tu.name, tu.input);
-          if (!permResult.allowed) {
+          const registeredTool = this.cfg.tools.get(toolUse.name);
+          let permission = await this.checkPermission(toolUse.name, toolUse.input);
+          if (permission.allowed && registeredTool.requiresConfirmation) {
+            permission = {
+              allowed: true,
+              requiresConfirm: true,
+              confirmPrompt: `Allow external tool ${toolUse.name}?`,
+            };
+          }
+          if (!permission.allowed) {
             this.cfg.audit.log({
               agentId: task.id,
-              tool: tu.name,
-              args: tu.input,
+              tool: toolUse.name,
+              args: toolUse.input,
               decision: "denied",
-              reason: permResult.reason,
+              reason: permission.reason,
             });
             toolResults.push({
-              tool_use_id: tu.id,
-              content: `Permission denied: ${permResult.reason}`,
+              tool_use_id: toolUse.id,
+              content: `Permission denied: ${permission.reason}`,
               is_error: true,
             });
-            yield { kind: "tool_result", name: tu.name, result: "denied" };
+            yield { kind: "tool_result", name: toolUse.name, result: "denied" };
             continue;
           }
 
-          // ถ้าต้อง confirm → throw ไปให้ orchestrator handle (pause + ask user)
-          if (permResult.requiresConfirm) {
+          let confirmationApproved = false;
+          if (permission.requiresConfirm) {
             this.cfg.audit.log({
               agentId: task.id,
-              tool: tu.name,
-              args: tu.input,
+              tool: toolUse.name,
+              args: toolUse.input,
               decision: "pending_confirm",
             });
-            toolResults.push({
-              tool_use_id: tu.id,
-              content: `CONFIRM_REQUIRED: ${permResult.confirmPrompt ?? "User confirmation required"}`,
-              is_error: true,
-            });
-            yield { kind: "tool_result", name: tu.name, result: "confirm_required" };
-            continue;
+            confirmationApproved = this.cfg.requestConfirmation
+              ? await this.cfg.requestConfirmation({
+                  agentId: task.id,
+                  tool: toolUse.name,
+                  args: toolUse.input,
+                  prompt: permission.confirmPrompt ?? `Allow ${toolUse.name}?`,
+                })
+              : false;
+            this.throwIfAborted();
+
+            if (!confirmationApproved) {
+              this.cfg.audit.log({
+                agentId: task.id,
+                tool: toolUse.name,
+                args: toolUse.input,
+                decision: "denied",
+                reason: "User denied confirmation",
+              });
+              toolResults.push({
+                tool_use_id: toolUse.id,
+                content: "Permission denied by user",
+                is_error: true,
+              });
+              yield { kind: "tool_result", name: toolUse.name, result: "denied_by_user" };
+              continue;
+            }
           }
 
-          // Execute
           try {
-            const tool = this.cfg.tools.get(tu.name);
-            const result = await tool.execute(tu.input, {
+            const result = await registeredTool.execute(toolUse.input, {
               agentId: task.id,
               acl: this.cfg.acl,
+              confirmationApproved,
             });
-
             this.cfg.audit.log({
               agentId: task.id,
-              tool: tu.name,
-              args: tu.input,
+              tool: toolUse.name,
+              args: toolUse.input,
               decision: "allowed",
             });
-
-            const resultStr = typeof result === "string" ? result : JSON.stringify(result);
-            toolResults.push({ tool_use_id: tu.id, content: resultStr });
-            yield { kind: "tool_result", name: tu.name, result };
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
+            const resultText = typeof result === "string" ? result : JSON.stringify(result);
+            toolResults.push({ tool_use_id: toolUse.id, content: resultText });
+            yield { kind: "tool_result", name: toolUse.name, result };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
             this.cfg.audit.log({
               agentId: task.id,
-              tool: tu.name,
-              args: tu.input,
+              tool: toolUse.name,
+              args: toolUse.input,
               decision: "error",
-              reason: errMsg,
+              reason: message,
             });
-            toolResults.push({
-              tool_use_id: tu.id,
-              content: `Error: ${errMsg}`,
-              is_error: true,
-            });
-            yield { kind: "tool_result", name: tu.name, result: errMsg };
+            toolResults.push({ tool_use_id: toolUse.id, content: `Error: ${message}`, is_error: true });
+            yield { kind: "tool_result", name: toolUse.name, result: message };
           }
         }
 
         messages.push({ role: "user", content: "", toolResults });
       }
 
-      // Hit max rounds
       yield {
         kind: "done",
         result: {
@@ -204,19 +214,39 @@ export class SubAgent {
           toolCalls: toolCallCount,
         },
       };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      yield { kind: "error", message: msg };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      yield { kind: "error", message };
       yield {
         kind: "done",
         result: {
           agentId: task.id,
           success: false,
           output: "",
-          error: msg,
+          error: message,
           toolCalls: toolCallCount,
         },
       };
     }
+  }
+
+  private async checkPermission(tool: string, args: Record<string, unknown>): Promise<PermissionDecision> {
+    const paths = tool === "move_file"
+      ? [String(args.from ?? ""), String(args.to ?? "")]
+      : [String(args.path ?? args.file_path ?? args.filepath ?? "")];
+
+    if (paths.every((value) => !value)) return this.cfg.acl.check(tool, args);
+
+    let confirmation: PermissionDecision | null = null;
+    for (const targetPath of paths) {
+      const decision = await this.cfg.acl.check(tool, { ...args, path: targetPath });
+      if (!decision.allowed) return decision;
+      if (decision.requiresConfirm) confirmation = decision;
+    }
+    return confirmation ?? { allowed: true, requiresConfirm: false };
+  }
+
+  private throwIfAborted() {
+    if (this.cfg.signal?.aborted) throw new Error("Task cancelled");
   }
 }

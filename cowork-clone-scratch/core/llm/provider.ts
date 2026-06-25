@@ -28,6 +28,7 @@ export type ChatOptions = {
   system?: string;
   maxTokens?: number;
   temperature?: number;
+  signal?: AbortSignal;
 };
 
 export type ChatWithToolsOptions = ChatOptions & {
