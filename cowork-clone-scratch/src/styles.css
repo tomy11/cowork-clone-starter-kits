@@ -119,6 +119,8 @@ button { color: inherit; }
 .section-heading button:hover { background: #ececeb; }
 .sidebar-list { display: grid; gap: 2px; }
 
+.sidebar-list--sessions { gap: 4px; }
+
 .sidebar-list-item, .agent-row {
   display: flex;
   align-items: center;
@@ -138,6 +140,73 @@ button { color: inherit; }
 .sidebar-list-item:hover, .sidebar-list-item.is-selected { background: #efefee; }
 .sidebar-list-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item-dot { width: 6px; height: 6px; margin-left: auto; background: #f04452; border-radius: 50%; }
+
+.session-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 34px;
+  border-radius: 7px;
+  color: #666;
+}
+
+.session-list-item.is-selected {
+  background: #efefee;
+  color: #202020;
+}
+
+.session-list-item > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.session-list-item > button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-right: 4px;
+  opacity: 0;
+}
+
+.session-list-item:hover .session-actions,
+.session-list-item:focus-within .session-actions,
+.session-list-item.is-selected .session-actions {
+  opacity: 1;
+}
+
+.session-actions button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: #858585;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.session-actions button:hover {
+  color: #222;
+  background: #e6e6e4;
+}
 
 .agent-avatar {
   display: grid;

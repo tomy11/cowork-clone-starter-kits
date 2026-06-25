@@ -3,9 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { Chat } from "./components/Chat";
 import { Sidebar } from "./components/Sidebar";
 import { Icon } from "./components/Icon";
+import { LocalApiClient, type McpServerSummary, type SessionSummary, type SkillSummary } from "./lib/local-api";
 
-type SkillSummary = { name: string; description?: string };
-type McpServerSummary = { name: string; enabled: boolean; connected: boolean; tools: string[]; error?: string };
+type SidecarBootstrap = { httpUrl: string };
 
 export default function App() {
   const [grantedFolders, setGrantedFolders] = useState<string[]>([]);
@@ -13,20 +13,25 @@ export default function App() {
   const [tools, setTools] = useState<string[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerSummary[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [localApi, setLocalApi] = useState<LocalApiClient | null>(null);
   const [chatKey, setChatKey] = useState(0);
   const [resumeLatest, setResumeLatest] = useState(true);
 
   useEffect(() => {
     async function initialize() {
-      await invoke("spawn_sidecar");
-      const [foldersResult, skillsResult, toolsResult, mcpResult] = await Promise.all([
-        invoke<{ folders: string[] }>("list_granted_folders"),
+      const bootstrap = await invoke<SidecarBootstrap>("spawn_sidecar");
+      const api = new LocalApiClient(bootstrap.httpUrl);
+      await api.waitForHealth();
+      setLocalApi(api);
+      const [folders, skillsResult, toolsResult, mcpResult] = await Promise.all([
+        api.listWorkspaces(),
         invoke<{ skills: SkillSummary[] }>("list_skills"),
         invoke<{ tools: string[] }>("list_tools"),
         invoke<{ servers: McpServerSummary[] }>("call_sidecar", { method: "mcp_status", params: {} }),
       ]);
 
-      const folders = foldersResult.folders ?? [];
       setGrantedFolders(folders);
       setSelectedFolder((current) => current ?? folders[0] ?? null);
       setSkills(skillsResult.skills ?? []);
@@ -39,14 +44,41 @@ export default function App() {
     });
   }, []);
 
+  useEffect(() => {
+    if (!localApi || !selectedFolder) {
+      setSessions([]);
+      setSelectedSessionId(null);
+      return;
+    }
+    void refreshSessions(selectedFolder);
+  }, [localApi, selectedFolder]);
+
+  async function refreshSessions(folder = selectedFolder) {
+    if (!localApi || !folder) return;
+    const nextSessions = await localApi.listSessions(folder);
+    setSessions(nextSessions);
+    setSelectedSessionId((current) =>
+      current && nextSessions.some((session) => session.id === current)
+        ? current
+        : nextSessions[0]?.id ?? null,
+    );
+  }
+
   function startNewTask() {
     setResumeLatest(false);
+    setSelectedSessionId(null);
     setChatKey((key) => key + 1);
   }
 
   function selectFolder(folder: string | null) {
     setSelectedFolder(folder);
     setResumeLatest(true);
+    setChatKey((key) => key + 1);
+  }
+
+  function selectSession(sessionId: string | null) {
+    setSelectedSessionId(sessionId);
+    setResumeLatest(false);
     setChatKey((key) => key + 1);
   }
 
@@ -58,8 +90,14 @@ export default function App() {
         tools={tools}
         mcpServers={mcpServers}
         selectedFolder={selectedFolder}
+        sessions={sessions}
+        selectedSessionId={selectedSessionId}
+        localApi={localApi}
         onSelectFolder={selectFolder}
+        onSelectSession={selectSession}
         onFoldersChange={setGrantedFolders}
+        onSessionsChange={setSessions}
+        onRefreshSessions={() => void refreshSessions()}
         onNewTask={startNewTask}
       />
 
@@ -86,7 +124,17 @@ export default function App() {
           </div>
         </header>
 
-        <Chat key={chatKey} folder={selectedFolder} resumeLatest={resumeLatest} />
+        <Chat
+          key={chatKey}
+          folder={selectedFolder}
+          sessionId={selectedSessionId}
+          resumeLatest={resumeLatest}
+          localApi={localApi}
+          onSessionCreated={(session) => {
+            setSelectedSessionId(session.id);
+            void refreshSessions(session.workspace);
+          }}
+        />
       </main>
     </div>
   );

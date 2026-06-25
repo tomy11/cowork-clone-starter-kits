@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Icon, type IconName } from "./Icon";
+import type { AgentEvent, LocalApiClient, Message, SessionSummary } from "../lib/local-api";
 
-type Message = { role: "user" | "assistant"; content: string };
-type AgentEvent = { kind: string; runId?: string; [key: string]: unknown };
 type BridgeEvent = { requestId: string; event: AgentEvent };
 type Confirmation = { id: string; prompt: string };
 type AgentProgress = {
@@ -14,7 +13,13 @@ type AgentProgress = {
   detail?: string;
   skills: string[];
 };
-type Props = { folder: string | null; resumeLatest: boolean };
+type Props = {
+  folder: string | null;
+  sessionId: string | null;
+  resumeLatest: boolean;
+  localApi: LocalApiClient | null;
+  onSessionCreated?: (session: SessionSummary) => void;
+};
 
 const quickActions: Array<{ label: string; icon: IconName; prompt: string }> = [
   { label: "Document", icon: "document", prompt: "ช่วยสร้างเอกสารสรุปจากไฟล์ใน workspace นี้" },
@@ -23,7 +28,7 @@ const quickActions: Array<{ label: string; icon: IconName; prompt: string }> = [
   { label: "Spreadsheet", icon: "spreadsheet", prompt: "ช่วยวิเคราะห์ข้อมูลตารางใน workspace นี้" },
 ];
 
-export function Chat({ folder, resumeLatest }: Props) {
+export function Chat({ folder, sessionId, resumeLatest, localApi, onSessionCreated }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
@@ -35,6 +40,7 @@ export function Chat({ folder, resumeLatest }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const activeRunId = useRef<string | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const hasConversation = messages.length > 0;
 
@@ -70,23 +76,38 @@ export function Chat({ folder, resumeLatest }: Props) {
 
   const cleanupListener = useRef<null | (() => void)>(null);
 
+  useEffect(() => () => {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+  }, []);
+
   useEffect(() => {
+    let disposed = false;
     setMessages([]);
     setConversationId(null);
     setEvents([]);
     setAgents({});
-    if (!folder || !resumeLatest) return;
+    if (!folder || !localApi) return () => { disposed = true; };
 
-    invoke<{ conversation: { id: string; messages: Message[] } | null }>("call_sidecar", {
-      method: "latest_conversation",
-      params: { workspace: folder },
-    }).then((result) => {
-      if (result.conversation) {
-        setConversationId(result.conversation.id);
-        setMessages(result.conversation.messages);
-      }
-    }).catch((error) => console.error("Failed to load conversation", error));
-  }, [folder, resumeLatest]);
+    const loader = sessionId
+      ? localApi.getSession(sessionId)
+      : resumeLatest
+        ? localApi.latestSession(folder)
+        : Promise.resolve(null);
+
+    loader
+      .then((session) => {
+        if (disposed) return;
+        if (session) {
+          setConversationId(session.id);
+          setMessages(session.messages);
+        }
+      })
+      .catch((error) => {
+        if (!disposed) console.error("Failed to load conversation", error);
+      });
+    return () => { disposed = true; };
+  }, [folder, sessionId, resumeLatest, localApi]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -137,6 +158,64 @@ export function Chat({ folder, resumeLatest }: Props) {
     });
   }
 
+  function handleAgentEvent(event: AgentEvent) {
+    if (!activeRunId.current || event.runId !== activeRunId.current) return;
+    setEvents((current) => [...current, event]);
+    applyAgentEvent(event);
+
+    if (event.kind === "final" && typeof event.content === "string") {
+      const content = event.content;
+      setMessages((current) => [...current, { role: "assistant", content }]);
+    } else if (event.kind === "confirmation_requested") {
+      if (typeof event.confirmationId === "string" && typeof event.prompt === "string") {
+        setConfirmation({ id: event.confirmationId, prompt: event.prompt });
+      }
+    } else if (event.kind === "confirmation_resolved") {
+      setConfirmation(null);
+    }
+  }
+
+  async function ensureHttpSession(title: string) {
+    if (!folder || !localApi) throw new Error("Local API is not ready");
+    if (conversationId) return conversationId;
+    const session = await localApi.createSession(folder, title);
+    setConversationId(session.id);
+    onSessionCreated?.(session);
+    return session.id;
+  }
+
+  async function sendViaHttp(content: string, runId: string) {
+    if (!folder || !localApi) throw new Error("Local API is not ready");
+    const sessionId = await ensureHttpSession(content);
+    eventSourceRef.current?.close();
+    eventSourceRef.current = localApi.openSessionEvents(sessionId, handleAgentEvent);
+    await waitForEventSourceOpen(eventSourceRef.current);
+    const result = await localApi.sendMessage(sessionId, { message: content, workspace: folder, runId });
+    setConversationId(result.conversationId);
+    if (result.status === "cancelled") {
+      setMessages((current) => [...current, { role: "assistant", content: "Task cancelled." }]);
+    }
+  }
+
+  async function sendViaRpc(content: string, runId: string) {
+    const result = await invoke<{
+      events: AgentEvent[];
+      runId: string;
+      conversationId: string;
+      status: string;
+    }>("run", {
+      message: content,
+      history: messages,
+      workspace: folder,
+      runId,
+      conversationId,
+    });
+    setConversationId(result.conversationId);
+    if (result.status === "cancelled") {
+      setMessages((current) => [...current, { role: "assistant", content: "Task cancelled." }]);
+    }
+  }
+
   async function send() {
     const content = input.trim();
     if (!content || running || !folder) return;
@@ -150,22 +229,8 @@ export function Chat({ folder, resumeLatest }: Props) {
     setAgents({});
 
     try {
-      const result = await invoke<{
-        events: AgentEvent[];
-        runId: string;
-        conversationId: string;
-        status: string;
-      }>("run", {
-        message: content,
-        history: messages,
-        workspace: folder,
-        runId,
-        conversationId,
-      });
-      setConversationId(result.conversationId);
-      if (result.status === "cancelled") {
-        setMessages((current) => [...current, { role: "assistant", content: "Task cancelled." }]);
-      }
+      if (localApi) await sendViaHttp(content, runId);
+      else await sendViaRpc(content, runId);
     } catch (error) {
       setMessages((current) => [
         ...current,
@@ -180,20 +245,28 @@ export function Chat({ folder, resumeLatest }: Props) {
 
   async function cancelRun() {
     if (!activeRunId.current) return;
-    await invoke("call_sidecar", {
-      method: "cancel_run",
-      params: { runId: activeRunId.current },
-    });
+    if (localApi) {
+      await localApi.cancelRun(activeRunId.current);
+    } else {
+      await invoke("call_sidecar", {
+        method: "cancel_run",
+        params: { runId: activeRunId.current },
+      });
+    }
   }
 
   async function respondToConfirmation(approved: boolean) {
     if (!confirmation) return;
     const id = confirmation.id;
     setConfirmation(null);
-    await invoke("call_sidecar", {
-      method: "respond_confirmation",
-      params: { confirmationId: id, approved },
-    });
+    if (localApi) {
+      await localApi.respondApproval(id, approved);
+    } else {
+      await invoke("call_sidecar", {
+        method: "respond_confirmation",
+        params: { confirmationId: id, approved },
+      });
+    }
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -299,6 +372,31 @@ export function Chat({ folder, resumeLatest }: Props) {
       )}
     </div>
   );
+}
+
+function waitForEventSourceOpen(source: EventSource) {
+  if (source.readyState === EventSource.OPEN) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for event stream"));
+    }, 5_000);
+    const onOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("Unable to open event stream"));
+    };
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      source.removeEventListener("open", onOpen);
+      source.removeEventListener("error", onError);
+    };
+    source.addEventListener("open", onOpen);
+    source.addEventListener("error", onError);
+  });
 }
 
 type ComposerProps = {

@@ -20,6 +20,8 @@
 - [x] Live sub-agent progress and cooperative/provider cancellation
 - [x] Planner-selected skills injected into sub-agents
 - [x] Portable multi-agent pipeline core and coding workflow preset
+- [x] Local HTTP/SSE server boundary over shared app runtime
+- [x] Session list, rename, archive, and delete across storage, HTTP API, and sidebar UI
 
 ## Release follow-up
 

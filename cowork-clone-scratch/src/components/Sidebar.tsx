@@ -1,10 +1,7 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Icon, type IconName } from "./Icon";
-
-type SkillSummary = { name: string; description?: string };
-type McpServerSummary = { name: string; enabled: boolean; connected: boolean; tools: string[]; error?: string };
+import type { LocalApiClient, McpServerSummary, SessionSummary, SkillSummary } from "../lib/local-api";
 
 type Props = {
   grantedFolders: string[];
@@ -12,8 +9,14 @@ type Props = {
   tools: string[];
   mcpServers: McpServerSummary[];
   selectedFolder: string | null;
+  sessions: SessionSummary[];
+  selectedSessionId: string | null;
+  localApi: LocalApiClient | null;
   onSelectFolder: (folder: string | null) => void;
+  onSelectSession: (sessionId: string | null) => void;
   onFoldersChange: (folders: string[]) => void;
+  onSessionsChange: (sessions: SessionSummary[]) => void;
+  onRefreshSessions: () => void;
   onNewTask: () => void;
 };
 
@@ -30,8 +33,14 @@ export function Sidebar({
   tools,
   mcpServers,
   selectedFolder,
+  sessions,
+  selectedSessionId,
+  localApi,
   onSelectFolder,
+  onSelectSession,
   onFoldersChange,
+  onSessionsChange,
+  onRefreshSessions,
   onNewTask,
 }: Props) {
   const [collapsed, setCollapsed] = useState(false);
@@ -44,8 +53,9 @@ export function Sidebar({
   async function pickFolder() {
     const selected = await open({ directory: true, multiple: false });
     if (typeof selected !== "string") return;
+    if (!localApi) throw new Error("Local API is not ready");
 
-    await invoke("grant_folder", { folder: selected });
+    await localApi.grantWorkspace(selected);
     const nextFolders = folders.includes(selected) ? folders : [...folders, selected];
     setFolders(nextFolders);
     onFoldersChange(nextFolders);
@@ -54,6 +64,33 @@ export function Sidebar({
 
   function newTask() {
     onNewTask();
+  }
+
+  async function renameSession(session: SessionSummary) {
+    if (!localApi) return;
+    const title = window.prompt("Rename session", session.title);
+    const nextTitle = title?.trim();
+    if (!nextTitle || nextTitle === session.title) return;
+    const updated = await localApi.renameSession(session.id, nextTitle);
+    onSessionsChange(sessions.map((item) => item.id === updated.id ? updated : item));
+  }
+
+  async function archiveSession(session: SessionSummary) {
+    if (!localApi) return;
+    if (!window.confirm(`Archive "${session.title}"?`)) return;
+    await localApi.archiveSession(session.id, true);
+    const nextSessions = sessions.filter((item) => item.id !== session.id);
+    onSessionsChange(nextSessions);
+    if (selectedSessionId === session.id) onSelectSession(nextSessions[0]?.id ?? null);
+  }
+
+  async function deleteSession(session: SessionSummary) {
+    if (!localApi) return;
+    if (!window.confirm(`Delete "${session.title}" permanently?`)) return;
+    await localApi.deleteSession(session.id);
+    const nextSessions = sessions.filter((item) => item.id !== session.id);
+    onSessionsChange(nextSessions);
+    if (selectedSessionId === session.id) onSelectSession(nextSessions[0]?.id ?? null);
   }
 
   return (
@@ -125,6 +162,46 @@ export function Sidebar({
             <div className="agent-row"><span className="agent-avatar agent-avatar--red">C</span><span>Coder</span></div>
             <div className="agent-row"><span className="agent-avatar agent-avatar--yellow">V</span><span>Verifier</span></div>
           </div>
+        </section>
+
+        <section className="sidebar-section">
+          <div className="section-heading">
+            <span>Sessions</span>
+            <button type="button" aria-label="Refresh sessions" onClick={onRefreshSessions}>
+              <Icon name="refresh" size={15} />
+            </button>
+          </div>
+          {sessions.length === 0 ? (
+            <button className="empty-workspace" type="button" onClick={newTask}>
+              Start a new session
+            </button>
+          ) : (
+            <div className="sidebar-list sidebar-list--sessions">
+              {sessions.map((session) => (
+                <div
+                  className={`session-list-item${session.id === selectedSessionId ? " is-selected" : ""}`}
+                  key={session.id}
+                  title={session.title}
+                >
+                  <button type="button" onClick={() => onSelectSession(session.id)}>
+                    <Icon name="document" size={15} />
+                    <span>{session.title}</span>
+                  </button>
+                  <div className="session-actions">
+                    <button type="button" aria-label="Rename session" onClick={() => void renameSession(session)}>
+                      <Icon name="edit" size={13} />
+                    </button>
+                    <button type="button" aria-label="Archive session" onClick={() => void archiveSession(session)}>
+                      <Icon name="archive" size={13} />
+                    </button>
+                    <button type="button" aria-label="Delete session" onClick={() => void deleteSession(session)}>
+                      <Icon name="trash" size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         {(skills.length > 0 || tools.length > 0) && (

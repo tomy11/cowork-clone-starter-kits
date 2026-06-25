@@ -10,6 +10,7 @@ export type StoredConversation = {
   workspace: string;
   title: string;
   messages: Message[];
+  archived: boolean;
   updatedAt: string;
 };
 
@@ -34,6 +35,7 @@ export class WorkspaceStore {
         id TEXT PRIMARY KEY,
         workspace TEXT NOT NULL,
         title TEXT NOT NULL,
+        archived INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
@@ -56,6 +58,13 @@ export class WorkspaceStore {
       CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations(workspace, updated_at);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id);
     `);
+    this.ensureColumn("conversations", "archived", "INTEGER NOT NULL DEFAULT 0");
+  }
+
+  private ensureColumn(table: string, column: string, definition: string) {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (columns.some((entry) => entry.name === column)) return;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
   grantWorkspace(workspace: string) {
@@ -95,19 +104,57 @@ export class WorkspaceStore {
 
   latestConversation(workspace: string): StoredConversation | null {
     const row = this.db
-      .prepare("SELECT id, workspace, title, updated_at FROM conversations WHERE workspace = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1")
-      .get(path.resolve(workspace)) as { id: string; workspace: string; title: string; updated_at: string } | undefined;
+      .prepare("SELECT id, workspace, title, archived, updated_at FROM conversations WHERE workspace = ? AND archived = 0 ORDER BY updated_at DESC, rowid DESC LIMIT 1")
+      .get(path.resolve(workspace)) as ConversationRow | undefined;
     return row ? this.hydrateConversation(row) : null;
+  }
+
+  listConversations(workspace?: unknown, options: { includeArchived?: boolean } = {}): StoredConversation[] {
+    const hasWorkspace = typeof workspace === "string" && workspace.trim().length > 0;
+    const archiveFilter = options.includeArchived ? "" : " AND archived = 0";
+    const rows = hasWorkspace
+      ? this.db
+        .prepare(`SELECT id, workspace, title, archived, updated_at FROM conversations WHERE workspace = ?${archiveFilter} ORDER BY updated_at DESC, rowid DESC`)
+        .all(path.resolve(workspace)) as ConversationRow[]
+      : this.db
+        .prepare(`SELECT id, workspace, title, archived, updated_at FROM conversations WHERE 1 = 1${archiveFilter} ORDER BY updated_at DESC, rowid DESC`)
+        .all() as ConversationRow[];
+    return rows.map((row) => this.hydrateConversation(row));
   }
 
   getConversation(id: string): StoredConversation | null {
     const row = this.db
-      .prepare("SELECT id, workspace, title, updated_at FROM conversations WHERE id = ?")
-      .get(id) as { id: string; workspace: string; title: string; updated_at: string } | undefined;
+      .prepare("SELECT id, workspace, title, archived, updated_at FROM conversations WHERE id = ?")
+      .get(id) as ConversationRow | undefined;
     return row ? this.hydrateConversation(row) : null;
   }
 
-  private hydrateConversation(row: { id: string; workspace: string; title: string; updated_at: string }): StoredConversation {
+  renameConversation(id: string, title: string): StoredConversation | null {
+    const trimmed = title.trim().slice(0, 120);
+    if (!trimmed) throw new Error("Title is required");
+    const result = this.db
+      .prepare("UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(trimmed, id);
+    return result.changes > 0 ? this.getConversation(id) : null;
+  }
+
+  archiveConversation(id: string, archived: boolean): StoredConversation | null {
+    const result = this.db
+      .prepare("UPDATE conversations SET archived = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(archived ? 1 : 0, id);
+    return result.changes > 0 ? this.getConversation(id) : null;
+  }
+
+  deleteConversation(id: string): boolean {
+    const transaction = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM tasks WHERE conversation_id = ?").run(id);
+      this.db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
+      return this.db.prepare("DELETE FROM conversations WHERE id = ?").run(id).changes > 0;
+    });
+    return transaction();
+  }
+
+  private hydrateConversation(row: ConversationRow): StoredConversation {
     const messages = this.db
       .prepare("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id")
       .all(row.id) as Array<{ role: "user" | "assistant"; content: string }>;
@@ -116,6 +163,7 @@ export class WorkspaceStore {
       workspace: row.workspace,
       title: row.title,
       messages,
+      archived: Boolean(row.archived),
       updatedAt: row.updated_at,
     };
   }
@@ -136,3 +184,11 @@ export class WorkspaceStore {
     this.db.close();
   }
 }
+
+type ConversationRow = {
+  id: string;
+  workspace: string;
+  title: string;
+  archived: number;
+  updated_at: string;
+};

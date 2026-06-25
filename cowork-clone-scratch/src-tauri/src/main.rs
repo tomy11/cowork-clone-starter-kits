@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -15,6 +16,7 @@ type PendingRequests = Arc<Mutex<HashMap<String, mpsc::Sender<RpcResult>>>>;
 struct SidecarProcess {
     child: Child,
     stdin: ChildStdin,
+    http_url: String,
 }
 
 impl Drop for SidecarProcess {
@@ -52,16 +54,24 @@ struct AgentEventPayload {
     event: serde_json::Value,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SidecarBootstrap {
+    http_url: String,
+}
+
 #[tauri::command]
 fn spawn_sidecar(
     app: AppHandle,
     state: State<'_, SidecarState>,
-) -> Result<(), String> {
+) -> Result<SidecarBootstrap, String> {
     let mut process_guard = state.process.lock().map_err(|error| error.to_string())?;
-    if process_guard.is_some() {
-        return Ok(());
+    if let Some(process) = process_guard.as_ref() {
+        return Ok(SidecarBootstrap { http_url: process.http_url.clone() });
     }
 
+    let http_port = reserve_local_port()?;
+    let http_url = format!("http://127.0.0.1:{http_port}");
     let project_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent();
     let mut command = if cfg!(debug_assertions) {
         let npm = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
@@ -87,6 +97,7 @@ fn spawn_sidecar(
     if let Ok(resource_dir) = app.path().resource_dir() {
         command.env("COWORK_RESOURCE_DIR", resource_dir);
     }
+    command.env("COWORK_HTTP_PORT", http_port.to_string());
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -139,8 +150,19 @@ fn spawn_sidecar(
         reject_all(&pending, "Sidecar closed its output stream".to_string());
     });
 
-    *process_guard = Some(SidecarProcess { child, stdin });
-    Ok(())
+    *process_guard = Some(SidecarProcess { child, stdin, http_url: http_url.clone() });
+    Ok(SidecarBootstrap { http_url })
+}
+
+fn reserve_local_port() -> Result<u16, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("Could not reserve local HTTP port: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("Could not inspect local HTTP port: {error}"))?
+        .port();
+    drop(listener);
+    Ok(port)
 }
 
 fn reject_all(pending: &PendingRequests, message: String) {

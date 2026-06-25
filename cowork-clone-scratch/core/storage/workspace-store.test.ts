@@ -20,4 +20,19 @@ describe("WorkspaceStore", () => {
     });
     store.close();
   });
+
+  it("renames, archives, and deletes conversations", () => {
+    const store = new WorkspaceStore(":memory:");
+    store.grantWorkspace("/tmp/example-workspace");
+    const first = store.ensureConversation("/tmp/example-workspace", "First task");
+    const second = store.ensureConversation("/tmp/example-workspace", "Second task");
+
+    expect(store.renameConversation(first, "Renamed task")?.title).toBe("Renamed task");
+    expect(store.archiveConversation(first, true)?.archived).toBe(true);
+    expect(store.listConversations("/tmp/example-workspace").map((session) => session.id)).toEqual([second]);
+    expect(store.listConversations("/tmp/example-workspace", { includeArchived: true }).map((session) => session.id)).toContain(first);
+    expect(store.deleteConversation(second)).toBe(true);
+    expect(store.getConversation(second)).toBeNull();
+    store.close();
+  });
 });
