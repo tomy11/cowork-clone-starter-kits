@@ -243,6 +243,41 @@ button { color: inherit; }
 .mcp-dot { width: 8px; height: 8px; background: #c6c6c6; border-radius: 50%; }
 .mcp-dot.is-connected { background: #53b981; box-shadow: 0 0 0 3px rgba(83, 185, 129, .12); }
 
+.extension-empty {
+  margin: 2px 8px;
+  color: #8f8f8f;
+  font-size: 12px;
+}
+
+.extension-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 6px 8px;
+  border-radius: 7px;
+}
+
+.extension-row:hover { background: #efefee; }
+.extension-row > div { display: grid; min-width: 0; gap: 2px; }
+.extension-row strong,
+.extension-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extension-row strong { font-size: 12px; font-weight: 500; }
+.extension-row span { color: #8f8f8f; font-size: 10px; }
+.extension-row small { color: #9a9a9a; font-size: 10px; text-transform: capitalize; }
+.extension-status { width: 8px; height: 8px; border-radius: 50%; }
+.extension-status--ready { background: #53b981; box-shadow: 0 0 0 3px rgba(83, 185, 129, .12); }
+.extension-status--needs_setup { background: #e7b84f; box-shadow: 0 0 0 3px rgba(231, 184, 79, .14); }
+.extension-status--disabled { background: #c8c8c5; }
+.extension-status--invalid { background: #ef5d62; box-shadow: 0 0 0 3px rgba(239, 93, 98, .12); }
+
 .account-row {
   display: flex;
   align-items: center;

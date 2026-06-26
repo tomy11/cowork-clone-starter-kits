@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Icon, type IconName } from "./Icon";
-import type { LocalApiClient, McpServerSummary, SessionSummary, SkillSummary } from "../lib/local-api";
+import type { ExtensionSummary, LocalApiClient, McpServerSummary, SessionSummary, SkillSummary } from "../lib/local-api";
 
 type Props = {
   grantedFolders: string[];
   skills: SkillSummary[];
+  extensions: ExtensionSummary[];
   tools: string[];
   mcpServers: McpServerSummary[];
   selectedFolder: string | null;
@@ -17,6 +18,7 @@ type Props = {
   onFoldersChange: (folders: string[]) => void;
   onSessionsChange: (sessions: SessionSummary[]) => void;
   onRefreshSessions: () => void;
+  onRefreshExtensions: () => void;
   onNewTask: () => void;
 };
 
@@ -30,6 +32,7 @@ const primaryNav: Array<{ label: string; icon: IconName }> = [
 export function Sidebar({
   grantedFolders,
   skills,
+  extensions,
   tools,
   mcpServers,
   selectedFolder,
@@ -41,6 +44,7 @@ export function Sidebar({
   onFoldersChange,
   onSessionsChange,
   onRefreshSessions,
+  onRefreshExtensions,
   onNewTask,
 }: Props) {
   const [collapsed, setCollapsed] = useState(false);
@@ -211,6 +215,31 @@ export function Sidebar({
           </section>
         )}
 
+        <section className="sidebar-section sidebar-section--extensions">
+          <div className="section-heading">
+            <span>Extensions</span>
+            <button type="button" aria-label="Refresh extensions" onClick={onRefreshExtensions}>
+              <Icon name="refresh" size={15} />
+            </button>
+          </div>
+          {extensions.length === 0 ? (
+            <div className="extension-empty">No local manifests</div>
+          ) : (
+            <div className="sidebar-list">
+              {extensions.map((extension) => (
+                <div className="extension-row" key={extension.id} title={extensionTooltip(extension)}>
+                  <span className={`extension-status extension-status--${extension.status}`} />
+                  <div>
+                    <strong>{extension.name}</strong>
+                    <span>{extensionResourceSummary(extension)}</span>
+                  </div>
+                  <small>{formatExtensionStatus(extension.status)}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         {mcpServers.length > 0 && (
           <section className="sidebar-section sidebar-section--meta">
             <div className="section-heading"><span>MCP servers</span></div>
@@ -236,4 +265,34 @@ export function Sidebar({
       </footer>
     </aside>
   );
+}
+
+function extensionResourceSummary(extension: ExtensionSummary) {
+  const count = extension.resources.skills.length
+    + extension.resources.mcpServers.length
+    + extension.resources.commands.length;
+  const missingEnv = extension.setup.missingEnv.length;
+  const missingResources = extension.checks.missingResources.length;
+  if (missingEnv > 0 || missingResources > 0) {
+    const parts = [];
+    if (missingEnv > 0) parts.push(`${missingEnv} env`);
+    if (missingResources > 0) parts.push(`${missingResources} missing`);
+    return `${count} resources · ${parts.join(" · ")}`;
+  }
+  const setupCount = extension.setup.requiredEnv.length;
+  if (setupCount > 0) return `${count} resources · ${setupCount} env ok`;
+  return `${count} resources`;
+}
+
+function extensionTooltip(extension: ExtensionSummary) {
+  const missing = [
+    ...extension.setup.missingEnv.map((name) => `env:${name}`),
+    ...extension.checks.missingResources.map((resource) => `${resource.type}:${resource.name}`),
+  ];
+  if (missing.length === 0) return extension.manifestPath;
+  return `${extension.manifestPath}\nMissing ${missing.join(", ")}`;
+}
+
+function formatExtensionStatus(status: ExtensionSummary["status"]) {
+  return status.replace("_", " ");
 }

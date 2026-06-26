@@ -28,6 +28,9 @@
 - [x] Provider settings UI and chat model selector over local provider profiles
 - [x] Per-session provider/model persistence and runtime provider routing
 - [x] Ollama/OpenAI-compatible model refresh and local provider presets
+- [x] Local extension manifest loader and HTTP read API
+- [x] Extension registry summary in the sidebar over local manifests
+- [x] Extension setup readiness checks for required env, skills, and MCP references
 
 ## Release follow-up
 

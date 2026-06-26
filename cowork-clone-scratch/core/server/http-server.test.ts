@@ -1,10 +1,11 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ToolRegistry } from "../agent/tools/registry.js";
 import { builtInFileTools } from "../agent/tools/file-tools.js";
 import { MockProvider } from "../llm/mock.js";
+import { ExtensionsLoader } from "../extensions/loader.js";
 import { McpManager } from "../mcp/manager.js";
 import { AuditLog } from "../permissions/audit.js";
 import { PermissionACL } from "../permissions/acl.js";
@@ -228,6 +229,52 @@ describe("local HTTP server", () => {
 
     expect(await deleteJson(`${handle.url}/providers/${created.provider.id}`)).toEqual({ ok: true });
   });
+
+  it("serves local extension manifests through HTTP", async () => {
+    const { handle, extensionsRoot, resourceRoot } = await createTestServer();
+    await writeSkill(path.join(resourceRoot, "skills", "webapp-testing"));
+    await writeManifest(path.join(resourceRoot, "mcp.json"), {
+      servers: { browser: { command: "browser", enabled: false } },
+    });
+    await writeManifest(path.join(extensionsRoot, "webapp-testing", "extension.json"), {
+      id: "webapp-testing",
+      name: "Webapp Testing",
+      resources: {
+        skills: ["webapp-testing"],
+        mcpServers: ["browser"],
+      },
+      setup: {
+        requiredEnv: ["PLAYWRIGHT_BROWSERS_PATH"],
+        instructions: "Install browser dependencies before use.",
+      },
+    });
+
+    const list = await getJson(`${handle.url}/extensions`) as {
+      extensions: Array<{
+        id: string;
+        status: string;
+        resources: { skills: string[]; mcpServers: string[] };
+        setup: { missingEnv: string[] };
+        checks: { ready: boolean; missingResources: unknown[] };
+      }>;
+    };
+    expect(list.extensions).toHaveLength(1);
+    expect(list.extensions[0]).toMatchObject({
+      id: "webapp-testing",
+      status: "ready",
+      resources: { skills: ["webapp-testing"], mcpServers: ["browser"] },
+      setup: { missingEnv: [] },
+      checks: { ready: true, missingResources: [] },
+    });
+
+    const detail = await getJson(`${handle.url}/extensions/webapp-testing`) as {
+      extension: { id: string; setup: { requiredEnv: string[]; missingEnv: string[] } };
+    };
+    expect(detail.extension).toMatchObject({
+      id: "webapp-testing",
+      setup: { requiredEnv: ["PLAYWRIGHT_BROWSERS_PATH"], missingEnv: [] },
+    });
+  });
 });
 
 async function createTestServer() {
@@ -242,6 +289,11 @@ async function createTestServer() {
   const tools = new ToolRegistry();
   for (const tool of builtInFileTools) tools.register(tool);
   const skills = new SkillsLoader(path.join(directory, "skills"));
+  const extensionsRoot = path.join(directory, "extensions");
+  const extensions = new ExtensionsLoader(extensionsRoot, {
+    env: { PLAYWRIGHT_BROWSERS_PATH: "/tmp/browsers" },
+    resourceRoot: directory,
+  });
   const mcp = new McpManager(path.join(directory, "mcp.json"), tools);
   const runtime = new AppRuntime({
     llm: new MockProvider(),
@@ -250,11 +302,22 @@ async function createTestServer() {
     store,
     tools,
     skills,
+    extensions,
     mcp,
   });
   const handle = await createLocalServer(runtime);
   handles.push(handle);
-  return { handle, workspace };
+  return { handle, workspace, extensionsRoot, resourceRoot: directory };
+}
+
+async function writeManifest(filePath: string, manifest: Record<string, unknown>) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
+}
+
+async function writeSkill(skillPath: string) {
+  await mkdir(skillPath, { recursive: true });
+  await writeFile(path.join(skillPath, "SKILL.md"), "---\nname: test\n---\nUse this skill.\n", "utf-8");
 }
 
 async function getJson(url: string) {

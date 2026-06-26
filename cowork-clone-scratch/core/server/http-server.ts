@@ -92,6 +92,19 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/extensions") {
+      writeJson(response, 200, { extensions: await runtime.listExtensions() });
+      return;
+    }
+
+    const extensionMatch = url.pathname.match(/^\/extensions\/([^/]+)$/);
+    if (request.method === "GET" && extensionMatch) {
+      const extension = await runtime.getExtension(decodeURIComponent(extensionMatch[1]));
+      if (!extension) return writeJson(response, 404, { error: "extension not found" });
+      writeJson(response, 200, { extension });
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/providers") {
       const body = await readJson(request);
       const result = await runtime.handle({

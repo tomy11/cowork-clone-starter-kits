@@ -35,6 +35,8 @@ The Tauri shell now sets `COWORK_HTTP_PORT` automatically when it spawns the sid
 - `POST /providers/:id/default`
 - `POST /providers/:id/test`
 - `GET /providers/:id/models`
+- `GET /extensions`
+- `GET /extensions/:id`
 - `GET /sessions?workspace=/path/to/workspace`
 - `POST /sessions`
 - `GET /sessions/:id`
@@ -91,5 +93,7 @@ curl -X POST http://127.0.0.1:8787/sessions/<session-id>/messages \
 - Provider profiles are persisted locally and exposed through provider management endpoints.
 - Sessions can store provider/model selection, and run events include the provider/model used.
 - Ollama/OpenAI-compatible profiles can refresh model lists through the local provider API.
+- Local extension manifests are loaded from `extensions/*/extension.json` or `extensions/*.json` and exposed through read-only HTTP endpoints.
+- Extension responses include local readiness checks for missing setup env vars and unresolved skill/MCP resources.
 - Approvals are runtime-owned and can be answered through either JSON-RPC or HTTP.
 - The current server is local-first and unauthenticated. Add tokens before exposing it outside localhost.

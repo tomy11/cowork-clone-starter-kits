@@ -8,6 +8,7 @@ import { AuditLog } from "./permissions/audit.js";
 import { ClaudeProvider } from "./llm/claude.js";
 import { OpenAICompatProvider } from "./llm/openai-compatible.js";
 import { SkillsLoader } from "./skills/loader.js";
+import { ExtensionsLoader } from "./extensions/loader.js";
 import {
   WorkspaceStore,
   type ProviderProfileInput,
@@ -46,6 +47,7 @@ export type AppRuntimeConfig = {
   store: WorkspaceStore;
   tools: ToolRegistry;
   skills: SkillsLoader;
+  extensions: ExtensionsLoader;
   mcp: McpManager;
   orchestrator?: Orchestrator;
 };
@@ -135,6 +137,15 @@ export class AppRuntime {
 
         case "load_skill":
           return { id: request.id, result: { skill: await this.cfg.skills.load(String(request.params.name)) } };
+
+        case "list_extensions":
+          return { id: request.id, result: { extensions: await this.cfg.extensions.list() } };
+
+        case "get_extension": {
+          const extension = await this.cfg.extensions.get(String(request.params.extensionId));
+          if (!extension) return { id: request.id, error: { message: "Extension not found", code: 404 } };
+          return { id: request.id, result: { extension } };
+        }
 
         case "list_tools":
           return { id: request.id, result: { tools: this.cfg.tools.names() } };
@@ -299,6 +310,14 @@ export class AppRuntime {
 
   listProviderProfiles() {
     return this.cfg.store.listProviderProfiles();
+  }
+
+  async listExtensions() {
+    return this.cfg.extensions.list();
+  }
+
+  async getExtension(id: string) {
+    return this.cfg.extensions.get(id);
   }
 
   createProviderProfile(input: ProviderProfileInput) {
@@ -590,6 +609,7 @@ export function createRuntimeFromEnv(env: NodeJS.ProcessEnv = process.env) {
 
   const resourceRoot = env.COWORK_RESOURCE_DIR ?? process.cwd();
   const skills = new SkillsLoader(path.join(resourceRoot, "skills"));
+  const extensions = new ExtensionsLoader(path.join(resourceRoot, "extensions"), { env, resourceRoot });
   const mcp = new McpManager(path.join(resourceRoot, "mcp.json"), tools);
   const provider = env.LLM_PROVIDER ?? "claude";
   let llm: LLMProvider;
@@ -614,7 +634,7 @@ export function createRuntimeFromEnv(env: NodeJS.ProcessEnv = process.env) {
     fallbackProvider = { providerProfileId: null, providerName: "OpenAI-compatible env", providerType: "env", model };
   }
 
-  return new AppRuntime({ llm, fallbackProvider, acl, audit, store, tools, skills, mcp });
+  return new AppRuntime({ llm, fallbackProvider, acl, audit, store, tools, skills, extensions, mcp });
 }
 
 function createLLMFromProviderProfile(profile: ProviderProfileSecret, model: string): LLMProvider {

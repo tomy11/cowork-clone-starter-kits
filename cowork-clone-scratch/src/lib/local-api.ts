@@ -1,5 +1,48 @@
 export type SkillSummary = { name: string; description?: string };
 export type McpServerSummary = { name: string; enabled: boolean; connected: boolean; tools: string[]; error?: string };
+export type ExtensionCommand = {
+  id: string;
+  label: string;
+  command: string;
+  description: string;
+  workingDir: string | null;
+};
+export type ExtensionResourceCheck = {
+  type: "skill" | "mcpServer";
+  name: string;
+  ok: boolean;
+  path: string | null;
+  message: string | null;
+};
+export type ExtensionSummary = {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  enabled: boolean;
+  source: "local";
+  status: "ready" | "needs_setup" | "disabled" | "invalid";
+  valid: boolean;
+  errors: string[];
+  rootPath: string;
+  manifestPath: string;
+  resources: {
+    skills: string[];
+    mcpServers: string[];
+    commands: ExtensionCommand[];
+  };
+  setup: {
+    requiredEnv: string[];
+    missingEnv: string[];
+    instructions: string;
+  };
+  checks: {
+    ready: boolean;
+    missingEnv: string[];
+    missingResources: ExtensionResourceCheck[];
+    resources: ExtensionResourceCheck[];
+  };
+};
 export type Message = { role: "user" | "assistant"; content: string };
 export type SessionSummary = {
   id: string;
@@ -127,6 +170,16 @@ export class LocalApiClient {
 
   async listProviderModels(providerId: string) {
     return this.get<ProviderModelsResult>(`/providers/${encodeURIComponent(providerId)}/models`);
+  }
+
+  async listExtensions() {
+    const result = await this.get<{ extensions: ExtensionSummary[] }>("/extensions");
+    return result.extensions;
+  }
+
+  async getExtension(extensionId: string) {
+    const result = await this.get<{ extension: ExtensionSummary }>(`/extensions/${encodeURIComponent(extensionId)}`);
+    return result.extension;
   }
 
   async listSessions(workspace?: string, options: { includeArchived?: boolean } = {}) {

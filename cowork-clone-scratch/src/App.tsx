@@ -4,13 +4,21 @@ import { Chat } from "./components/Chat";
 import { ProviderSettings } from "./components/ProviderSettings";
 import { Sidebar } from "./components/Sidebar";
 import { Icon } from "./components/Icon";
-import { LocalApiClient, type McpServerSummary, type ProviderProfile, type SessionSummary, type SkillSummary } from "./lib/local-api";
+import {
+  LocalApiClient,
+  type ExtensionSummary,
+  type McpServerSummary,
+  type ProviderProfile,
+  type SessionSummary,
+  type SkillSummary,
+} from "./lib/local-api";
 
 type SidecarBootstrap = { httpUrl: string };
 
 export default function App() {
   const [grantedFolders, setGrantedFolders] = useState<string[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const [extensions, setExtensions] = useState<ExtensionSummary[]>([]);
   const [tools, setTools] = useState<string[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerSummary[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
@@ -29,9 +37,10 @@ export default function App() {
       const api = new LocalApiClient(bootstrap.httpUrl);
       await api.waitForHealth();
       setLocalApi(api);
-      const [folders, providersResult, skillsResult, toolsResult, mcpResult] = await Promise.all([
+      const [folders, providersResult, extensionsResult, skillsResult, toolsResult, mcpResult] = await Promise.all([
         api.listWorkspaces(),
         api.listProviders(),
+        api.listExtensions(),
         invoke<{ skills: SkillSummary[] }>("list_skills"),
         invoke<{ tools: string[] }>("list_tools"),
         invoke<{ servers: McpServerSummary[] }>("call_sidecar", { method: "mcp_status", params: {} }),
@@ -44,6 +53,7 @@ export default function App() {
       );
       setSelectedFolder((current) => current ?? folders[0] ?? null);
       setSkills(skillsResult.skills ?? []);
+      setExtensions(extensionsResult);
       setTools(toolsResult.tools ?? []);
       setMcpServers(mcpResult.servers ?? []);
     }
@@ -89,6 +99,11 @@ export default function App() {
     );
   }
 
+  async function refreshExtensions() {
+    if (!localApi) return;
+    setExtensions(await localApi.listExtensions());
+  }
+
   function startNewTask() {
     setResumeLatest(false);
     setSelectedSessionId(null);
@@ -114,6 +129,7 @@ export default function App() {
       <Sidebar
         grantedFolders={grantedFolders}
         skills={skills}
+        extensions={extensions}
         tools={tools}
         mcpServers={mcpServers}
         selectedFolder={selectedFolder}
@@ -125,6 +141,7 @@ export default function App() {
         onFoldersChange={setGrantedFolders}
         onSessionsChange={setSessions}
         onRefreshSessions={() => void refreshSessions()}
+        onRefreshExtensions={() => void refreshExtensions()}
         onNewTask={startNewTask}
       />
 
