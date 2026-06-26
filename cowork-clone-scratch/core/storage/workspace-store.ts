@@ -11,6 +11,8 @@ export type StoredConversation = {
   title: string;
   messages: Message[];
   archived: boolean;
+  providerProfileId: string | null;
+  model: string | null;
   updatedAt: string;
 };
 
@@ -31,6 +33,42 @@ export type StoredWorkspaceMetadata = {
   archivedSessionCount: number;
   grantedAt: string;
   updatedAt: string | null;
+};
+
+export type ProviderType = "claude" | "openai-compatible" | "ollama" | "mock";
+
+export type ProviderProfileInput = {
+  type: ProviderType;
+  name: string;
+  model: string;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+  enabled?: boolean;
+  isDefault?: boolean;
+};
+
+export type ProviderProfileUpdate = Partial<ProviderProfileInput>;
+
+export type StoredProviderProfile = {
+  id: string;
+  type: ProviderType;
+  name: string;
+  model: string;
+  baseUrl: string | null;
+  hasApiKey: boolean;
+  enabled: boolean;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProviderProfileSecret = StoredProviderProfile & {
+  apiKey: string | null;
+};
+
+export type ConversationOptions = {
+  providerProfileId?: string | null;
+  model?: string | null;
 };
 
 export class WorkspaceStore {
@@ -55,6 +93,8 @@ export class WorkspaceStore {
         workspace TEXT NOT NULL,
         title TEXT NOT NULL,
         archived INTEGER NOT NULL DEFAULT 0,
+        provider_profile_id TEXT,
+        model TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
@@ -88,11 +128,26 @@ export class WorkspaceStore {
         active_conversation_id TEXT,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS provider_profiles (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        model TEXT NOT NULL,
+        base_url TEXT,
+        api_key TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
       CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations(workspace, updated_at);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id);
       CREATE INDEX IF NOT EXISTS idx_events_conversation ON conversation_events(conversation_id, id);
+      CREATE INDEX IF NOT EXISTS idx_provider_profiles_default ON provider_profiles(is_default);
     `);
     this.ensureColumn("conversations", "archived", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("conversations", "provider_profile_id", "TEXT");
+    this.ensureColumn("conversations", "model", "TEXT");
   }
 
   private ensureColumn(table: string, column: string, definition: string) {
@@ -139,16 +194,25 @@ export class WorkspaceStore {
     }));
   }
 
-  ensureConversation(workspace: string, title: string, conversationId?: string): string {
+  ensureConversation(workspace: string, title: string, conversationId?: string, options: ConversationOptions = {}): string {
     if (conversationId) {
       const existing = this.db.prepare("SELECT id FROM conversations WHERE id = ?").get(conversationId);
+      if (existing && (options.providerProfileId !== undefined || options.model !== undefined)) {
+        this.setConversationProvider(conversationId, options);
+      }
       if (existing) return conversationId;
     }
 
     const id = conversationId ?? randomUUID();
     this.db
-      .prepare("INSERT INTO conversations (id, workspace, title) VALUES (?, ?, ?)")
-      .run(id, path.resolve(workspace), title.slice(0, 120) || "New task");
+      .prepare("INSERT INTO conversations (id, workspace, title, provider_profile_id, model) VALUES (?, ?, ?, ?, ?)")
+      .run(
+        id,
+        path.resolve(workspace),
+        title.slice(0, 120) || "New task",
+        options.providerProfileId ?? null,
+        normalizeOptionalText(options.model, 120),
+      );
     this.setActiveConversation(workspace, id);
     return id;
   }
@@ -167,7 +231,7 @@ export class WorkspaceStore {
 
   latestConversation(workspace: string): StoredConversation | null {
     const row = this.db
-      .prepare("SELECT id, workspace, title, archived, updated_at FROM conversations WHERE workspace = ? AND archived = 0 ORDER BY updated_at DESC, rowid DESC LIMIT 1")
+      .prepare("SELECT id, workspace, title, archived, provider_profile_id, model, updated_at FROM conversations WHERE workspace = ? AND archived = 0 ORDER BY updated_at DESC, rowid DESC LIMIT 1")
       .get(path.resolve(workspace)) as ConversationRow | undefined;
     return row ? this.hydrateConversation(row) : null;
   }
@@ -177,19 +241,34 @@ export class WorkspaceStore {
     const archiveFilter = options.includeArchived ? "" : " AND archived = 0";
     const rows = hasWorkspace
       ? this.db
-        .prepare(`SELECT id, workspace, title, archived, updated_at FROM conversations WHERE workspace = ?${archiveFilter} ORDER BY updated_at DESC, rowid DESC`)
+        .prepare(`SELECT id, workspace, title, archived, provider_profile_id, model, updated_at FROM conversations WHERE workspace = ?${archiveFilter} ORDER BY updated_at DESC, rowid DESC`)
         .all(path.resolve(workspace)) as ConversationRow[]
       : this.db
-        .prepare(`SELECT id, workspace, title, archived, updated_at FROM conversations WHERE 1 = 1${archiveFilter} ORDER BY updated_at DESC, rowid DESC`)
+        .prepare(`SELECT id, workspace, title, archived, provider_profile_id, model, updated_at FROM conversations WHERE 1 = 1${archiveFilter} ORDER BY updated_at DESC, rowid DESC`)
         .all() as ConversationRow[];
     return rows.map((row) => this.hydrateConversation(row));
   }
 
   getConversation(id: string): StoredConversation | null {
     const row = this.db
-      .prepare("SELECT id, workspace, title, archived, updated_at FROM conversations WHERE id = ?")
+      .prepare("SELECT id, workspace, title, archived, provider_profile_id, model, updated_at FROM conversations WHERE id = ?")
       .get(id) as ConversationRow | undefined;
     return row ? this.hydrateConversation(row) : null;
+  }
+
+  setConversationProvider(id: string, options: ConversationOptions): StoredConversation | null {
+    const current = this.getConversation(id);
+    if (!current) return null;
+    const providerProfileId = options.providerProfileId !== undefined
+      ? options.providerProfileId
+      : current.providerProfileId;
+    const model = options.model !== undefined
+      ? normalizeOptionalText(options.model, 120)
+      : current.model;
+    const result = this.db
+      .prepare("UPDATE conversations SET provider_profile_id = ?, model = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(providerProfileId ?? null, model, id);
+    return result.changes > 0 ? this.getConversation(id) : null;
   }
 
   renameConversation(id: string, title: string): StoredConversation | null {
@@ -282,6 +361,153 @@ export class WorkspaceStore {
     return conversation;
   }
 
+  listProviderProfiles(): StoredProviderProfile[] {
+    const rows = this.db
+      .prepare("SELECT id, type, name, model, base_url, api_key, enabled, is_default, created_at, updated_at FROM provider_profiles ORDER BY is_default DESC, updated_at DESC, rowid DESC")
+      .all() as ProviderProfileRow[];
+    return rows.map((row) => this.hydrateProviderProfile(row));
+  }
+
+  getProviderProfile(id: string): StoredProviderProfile | null {
+    const row = this.getProviderProfileRow(id);
+    return row ? this.hydrateProviderProfile(row) : null;
+  }
+
+  getProviderProfileWithSecret(id: string): ProviderProfileSecret | null {
+    const row = this.getProviderProfileRow(id);
+    return row ? this.hydrateProviderProfile(row, true) : null;
+  }
+
+  getDefaultProviderProfile(): StoredProviderProfile | null {
+    const row = this.db
+      .prepare("SELECT id, type, name, model, base_url, api_key, enabled, is_default, created_at, updated_at FROM provider_profiles WHERE is_default = 1 LIMIT 1")
+      .get() as ProviderProfileRow | undefined;
+    return row ? this.hydrateProviderProfile(row) : null;
+  }
+
+  getDefaultProviderProfileWithSecret(): ProviderProfileSecret | null {
+    const row = this.db
+      .prepare("SELECT id, type, name, model, base_url, api_key, enabled, is_default, created_at, updated_at FROM provider_profiles WHERE is_default = 1 LIMIT 1")
+      .get() as ProviderProfileRow | undefined;
+    return row ? this.hydrateProviderProfile(row, true) : null;
+  }
+
+  createProviderProfile(input: ProviderProfileInput): StoredProviderProfile {
+    const normalized = normalizeProviderProfile(input);
+    const id = randomUUID();
+    const shouldDefault = Boolean(normalized.isDefault) || this.listProviderProfiles().length === 0;
+    const transaction = this.db.transaction(() => {
+      if (shouldDefault) this.clearDefaultProvider();
+      this.db
+        .prepare(`
+          INSERT INTO provider_profiles (id, type, name, model, base_url, api_key, enabled, is_default)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          id,
+          normalized.type,
+          normalized.name,
+          normalized.model,
+          normalized.baseUrl ?? null,
+          normalized.apiKey ?? null,
+          normalized.enabled ? 1 : 0,
+          shouldDefault ? 1 : 0,
+        );
+    });
+    transaction();
+    return this.getProviderProfile(id)!;
+  }
+
+  updateProviderProfile(id: string, input: ProviderProfileUpdate): StoredProviderProfile | null {
+    const existing = this.getProviderProfileWithSecret(id);
+    if (!existing) return null;
+    const merged = normalizeProviderProfile({
+      type: input.type ?? existing.type,
+      name: input.name ?? existing.name,
+      model: input.model ?? existing.model,
+      baseUrl: "baseUrl" in input ? input.baseUrl : existing.baseUrl,
+      apiKey: "apiKey" in input ? input.apiKey : existing.apiKey,
+      enabled: input.enabled ?? existing.enabled,
+      isDefault: input.isDefault ?? existing.isDefault,
+    });
+    const transaction = this.db.transaction(() => {
+      if (merged.isDefault) this.clearDefaultProvider();
+      this.db
+        .prepare(`
+          UPDATE provider_profiles
+          SET type = ?, name = ?, model = ?, base_url = ?, api_key = ?, enabled = ?, is_default = ?, updated_at = datetime('now')
+          WHERE id = ?
+        `)
+        .run(
+          merged.type,
+          merged.name,
+          merged.model,
+          merged.baseUrl ?? null,
+          merged.apiKey ?? null,
+          merged.enabled ? 1 : 0,
+          merged.isDefault ? 1 : 0,
+          id,
+        );
+    });
+    transaction();
+    return this.getProviderProfile(id);
+  }
+
+  deleteProviderProfile(id: string): boolean {
+    const existing = this.getProviderProfile(id);
+    if (!existing) return false;
+    const transaction = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM provider_profiles WHERE id = ?").run(id);
+      if (existing.isDefault) {
+        const next = this.db
+          .prepare("SELECT id FROM provider_profiles WHERE enabled = 1 ORDER BY updated_at DESC, rowid DESC LIMIT 1")
+          .get() as { id: string } | undefined;
+        if (next) this.db.prepare("UPDATE provider_profiles SET is_default = 1, updated_at = datetime('now') WHERE id = ?").run(next.id);
+      }
+    });
+    transaction();
+    return true;
+  }
+
+  setDefaultProviderProfile(id: string): StoredProviderProfile | null {
+    const existing = this.getProviderProfile(id);
+    if (!existing) return null;
+    const transaction = this.db.transaction(() => {
+      this.clearDefaultProvider();
+      this.db.prepare("UPDATE provider_profiles SET is_default = 1, enabled = 1, updated_at = datetime('now') WHERE id = ?").run(id);
+    });
+    transaction();
+    return this.getProviderProfile(id);
+  }
+
+  private getProviderProfileRow(id: string): ProviderProfileRow | undefined {
+    return this.db
+      .prepare("SELECT id, type, name, model, base_url, api_key, enabled, is_default, created_at, updated_at FROM provider_profiles WHERE id = ?")
+      .get(id) as ProviderProfileRow | undefined;
+  }
+
+  private clearDefaultProvider() {
+    this.db.prepare("UPDATE provider_profiles SET is_default = 0 WHERE is_default = 1").run();
+  }
+
+  private hydrateProviderProfile(row: ProviderProfileRow, includeSecret: true): ProviderProfileSecret;
+  private hydrateProviderProfile(row: ProviderProfileRow, includeSecret?: false): StoredProviderProfile;
+  private hydrateProviderProfile(row: ProviderProfileRow, includeSecret = false): StoredProviderProfile | ProviderProfileSecret {
+    const profile = {
+      id: row.id,
+      type: row.type,
+      name: row.name,
+      model: row.model,
+      baseUrl: row.base_url,
+      hasApiKey: Boolean(row.api_key),
+      enabled: Boolean(row.enabled),
+      isDefault: Boolean(row.is_default),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+    return includeSecret ? { ...profile, apiKey: row.api_key } : profile;
+  }
+
   private hydrateConversation(row: ConversationRow): StoredConversation {
     const messages = this.db
       .prepare("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id")
@@ -292,6 +518,8 @@ export class WorkspaceStore {
       title: row.title,
       messages,
       archived: Boolean(row.archived),
+      providerProfileId: row.provider_profile_id,
+      model: row.model,
       updatedAt: row.updated_at,
     };
   }
@@ -318,6 +546,8 @@ type ConversationRow = {
   workspace: string;
   title: string;
   archived: number;
+  provider_profile_id: string | null;
+  model: string | null;
   updated_at: string;
 };
 
@@ -338,3 +568,48 @@ type WorkspaceMetadataRow = {
   session_count: number;
   archived_session_count: number;
 };
+
+type ProviderProfileRow = {
+  id: string;
+  type: ProviderType;
+  name: string;
+  model: string;
+  base_url: string | null;
+  api_key: string | null;
+  enabled: number;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
+};
+
+function normalizeProviderProfile(input: ProviderProfileInput): Required<ProviderProfileInput> {
+  if (!isProviderType(input.type)) throw new Error("Unsupported provider type");
+  const name = input.name.trim().slice(0, 80);
+  const model = input.model.trim().slice(0, 120);
+  if (!name) throw new Error("Provider name is required");
+  if (!model) throw new Error("Provider model is required");
+  const baseUrl = input.baseUrl === undefined || input.baseUrl === null
+    ? null
+    : input.baseUrl.trim().slice(0, 300) || null;
+  const apiKey = input.apiKey === undefined || input.apiKey === null
+    ? null
+    : input.apiKey.trim() || null;
+  return {
+    type: input.type,
+    name,
+    model,
+    baseUrl,
+    apiKey,
+    enabled: input.enabled ?? true,
+    isDefault: input.isDefault ?? false,
+  };
+}
+
+function isProviderType(value: string): value is ProviderType {
+  return value === "claude" || value === "openai-compatible" || value === "ollama" || value === "mock";
+}
+
+function normalizeOptionalText(value: string | null | undefined, maxLength: number) {
+  if (value === undefined || value === null) return null;
+  return value.trim().slice(0, maxLength) || null;
+}

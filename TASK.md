@@ -24,6 +24,10 @@
 - [x] Session list, rename, archive, and delete across storage, HTTP API, and sidebar UI
 - [x] Event replay and active session restore across storage, HTTP API, and chat UI
 - [x] Workspace metadata for active session, session counts, and timestamps
+- [x] Provider profile persistence and local HTTP management API
+- [x] Provider settings UI and chat model selector over local provider profiles
+- [x] Per-session provider/model persistence and runtime provider routing
+- [x] Ollama/OpenAI-compatible model refresh and local provider presets
 
 ## Release follow-up
 

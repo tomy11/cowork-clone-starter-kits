@@ -59,7 +59,17 @@ describe("local HTTP server", () => {
   it("streams session events over SSE while posting a message", async () => {
     const { handle, workspace } = await createTestServer();
     await postJson(`${handle.url}/workspaces`, { folder: workspace });
-    const created = await postJson(`${handle.url}/sessions`, { workspace, title: "SSE" }) as {
+    const provider = await postJson(`${handle.url}/providers`, {
+      type: "mock",
+      name: "Mock",
+      model: "mock",
+    }) as { provider: { id: string } };
+    const created = await postJson(`${handle.url}/sessions`, {
+      workspace,
+      title: "SSE",
+      providerProfileId: provider.provider.id,
+      model: "mock",
+    }) as {
       conversation: { id: string };
     };
 
@@ -71,6 +81,8 @@ describe("local HTTP server", () => {
     const result = await postJson(`${handle.url}/sessions/${created.conversation.id}/messages`, {
       message: "finish without tools",
       runId: "http-run",
+      providerProfileId: provider.provider.id,
+      model: "mock",
     }) as { status: string; conversationId: string };
     expect(result.status).toBe("done");
     expect(result.conversationId).toBe(created.conversation.id);
@@ -86,6 +98,11 @@ describe("local HTTP server", () => {
     };
     expect(replay.events.map((event) => event.kind)).toContain("run_started");
     expect(replay.events.map((event) => event.event.kind)).toContain("final");
+    expect(replay.events.find((event) => event.kind === "run_started")?.event).toMatchObject({
+      providerProfileId: provider.provider.id,
+      providerType: "mock",
+      model: "mock",
+    });
   });
 
   it("exposes run cancellation through HTTP", async () => {
@@ -159,6 +176,57 @@ describe("local HTTP server", () => {
       session: { id: string };
     };
     expect(fallback.session.id).toBe(second.conversation.id);
+  });
+
+  it("manages provider profiles through HTTP", async () => {
+    const { handle } = await createTestServer();
+    const created = await postJson(`${handle.url}/providers`, {
+      type: "claude",
+      name: "Claude",
+      model: "claude-sonnet-4-5",
+      apiKey: "anthropic-key",
+    }) as {
+      provider: { id: string; type: string; hasApiKey: boolean; isDefault: boolean; apiKey?: string };
+    };
+
+    expect(created.provider).toMatchObject({
+      type: "claude",
+      hasApiKey: true,
+      isDefault: true,
+    });
+    expect(created.provider.apiKey).toBeUndefined();
+
+    const updated = await patchJson(`${handle.url}/providers/${created.provider.id}`, {
+      name: "Claude Prod",
+      model: "claude-opus-4-1",
+    }) as { provider: { name: string; model: string } };
+    expect(updated.provider).toMatchObject({ name: "Claude Prod", model: "claude-opus-4-1" });
+
+    const providers = await getJson(`${handle.url}/providers`) as {
+      providers: Array<{ id: string; name: string; hasApiKey: boolean }>;
+    };
+    expect(providers.providers).toMatchObject([
+      { id: created.provider.id, name: "Claude Prod", hasApiKey: true },
+    ]);
+
+    const readiness = await postJson(`${handle.url}/providers/${created.provider.id}/test`, {}) as {
+      ok: boolean;
+      status: string;
+    };
+    expect(readiness).toMatchObject({ ok: true, status: "ready" });
+
+    const mock = await postJson(`${handle.url}/providers`, {
+      type: "mock",
+      name: "Mock",
+      model: "mock",
+    }) as { provider: { id: string } };
+    const models = await getJson(`${handle.url}/providers/${mock.provider.id}/models`) as {
+      ok: boolean;
+      models: string[];
+    };
+    expect(models).toMatchObject({ ok: true, models: ["mock"] });
+
+    expect(await deleteJson(`${handle.url}/providers/${created.provider.id}`)).toEqual({ ok: true });
   });
 });
 

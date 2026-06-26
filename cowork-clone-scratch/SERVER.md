@@ -28,6 +28,13 @@ The Tauri shell now sets `COWORK_HTTP_PORT` automatically when it spawns the sid
 - `POST /workspaces`
 - `GET /active-session?workspace=/path/to/workspace`
 - `PATCH /active-session`
+- `GET /providers`
+- `POST /providers`
+- `PATCH /providers/:id`
+- `DELETE /providers/:id`
+- `POST /providers/:id/default`
+- `POST /providers/:id/test`
+- `GET /providers/:id/models`
 - `GET /sessions?workspace=/path/to/workspace`
 - `POST /sessions`
 - `GET /sessions/:id`
@@ -81,5 +88,8 @@ curl -X POST http://127.0.0.1:8787/sessions/<session-id>/messages \
 - Session list, rename, archive, and delete are available through the local HTTP API.
 - Active session restore and event replay are persisted in SQLite and exposed through the local HTTP API.
 - Workspace metadata includes display name, active session, session counts, and timestamps.
+- Provider profiles are persisted locally and exposed through provider management endpoints.
+- Sessions can store provider/model selection, and run events include the provider/model used.
+- Ollama/OpenAI-compatible profiles can refresh model lists through the local provider API.
 - Approvals are runtime-owned and can be answered through either JSON-RPC or HTTP.
 - The current server is local-first and unauthenticated. Add tokens before exposing it outside localhost.

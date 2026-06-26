@@ -87,6 +87,80 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/providers") {
+      writeJson(response, 200, { providers: runtime.listProviderProfiles() });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/providers") {
+      const body = await readJson(request);
+      const result = await runtime.handle({
+        id: requestId(),
+        method: "create_provider_profile",
+        params: providerProfileInput(body),
+      });
+      writeRpc(response, result, 201);
+      return;
+    }
+
+    const providerMatch = url.pathname.match(/^\/providers\/([^/]+)$/);
+    if (request.method === "PATCH" && providerMatch) {
+      const body = await readJson(request);
+      const result = await runtime.handle({
+        id: requestId(),
+        method: "update_provider_profile",
+        params: {
+          providerId: decodeURIComponent(providerMatch[1]),
+          profile: providerProfileInput(body, true),
+        },
+      });
+      writeRpc(response, result, 200);
+      return;
+    }
+
+    if (request.method === "DELETE" && providerMatch) {
+      const result = await runtime.handle({
+        id: requestId(),
+        method: "delete_provider_profile",
+        params: { providerId: decodeURIComponent(providerMatch[1]) },
+      });
+      writeRpc(response, result, 200);
+      return;
+    }
+
+    const providerDefaultMatch = url.pathname.match(/^\/providers\/([^/]+)\/default$/);
+    if (request.method === "POST" && providerDefaultMatch) {
+      const result = await runtime.handle({
+        id: requestId(),
+        method: "set_default_provider_profile",
+        params: { providerId: decodeURIComponent(providerDefaultMatch[1]) },
+      });
+      writeRpc(response, result, 200);
+      return;
+    }
+
+    const providerTestMatch = url.pathname.match(/^\/providers\/([^/]+)\/test$/);
+    if (request.method === "POST" && providerTestMatch) {
+      const result = await runtime.handle({
+        id: requestId(),
+        method: "test_provider_profile",
+        params: { providerId: decodeURIComponent(providerTestMatch[1]) },
+      });
+      writeRpc(response, result, 200);
+      return;
+    }
+
+    const providerModelsMatch = url.pathname.match(/^\/providers\/([^/]+)\/models$/);
+    if (request.method === "GET" && providerModelsMatch) {
+      const result = await runtime.handle({
+        id: requestId(),
+        method: "list_provider_models",
+        params: { providerId: decodeURIComponent(providerModelsMatch[1]) },
+      });
+      writeRpc(response, result, 200);
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/workspaces") {
       const body = await readJson(request);
       const folder = stringField(body, "folder") ?? stringField(body, "path");
@@ -116,6 +190,8 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
           workspace,
           title: stringField(body, "title") ?? "New task",
           conversationId: stringField(body, "id"),
+          providerProfileId: stringField(body, "providerProfileId"),
+          model: stringField(body, "model"),
         },
       });
       writeRpc(response, result, 201);
@@ -198,6 +274,8 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
           workspace: stringField(body, "workspace") ?? conversation.workspace,
           message,
           runId: stringField(body, "runId"),
+          providerProfileId: stringField(body, "providerProfileId"),
+          model: stringField(body, "model"),
         },
       });
       writeRpc(response, result, 202);
@@ -291,6 +369,22 @@ function setCorsHeaders(response: ServerResponse) {
 function stringField(body: JsonObject, key: string) {
   const value = body[key];
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function providerProfileInput(body: JsonObject, partial = false) {
+  const profile: JsonObject = {};
+  for (const key of ["type", "name", "model", "baseUrl", "apiKey"] as const) {
+    if (partial && !(key in body)) continue;
+    const value = body[key];
+    if (typeof value === "string") profile[key] = value;
+    else if (value === null && (key === "baseUrl" || key === "apiKey")) profile[key] = null;
+  }
+  for (const key of ["enabled", "isDefault"] as const) {
+    if (partial && !(key in body)) continue;
+    const value = body[key];
+    if (typeof value === "boolean") profile[key] = value;
+  }
+  return profile;
 }
 
 function requestId() {

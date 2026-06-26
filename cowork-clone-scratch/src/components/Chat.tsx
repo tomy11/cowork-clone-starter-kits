@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Icon, type IconName } from "./Icon";
-import type { AgentEvent, LocalApiClient, Message, SessionSummary } from "../lib/local-api";
+import type { AgentEvent, LocalApiClient, Message, ProviderProfile, SessionSummary } from "../lib/local-api";
 
 type BridgeEvent = { requestId: string; event: AgentEvent };
 type Confirmation = { id: string; prompt: string };
@@ -18,6 +18,9 @@ type Props = {
   sessionId: string | null;
   resumeLatest: boolean;
   localApi: LocalApiClient | null;
+  providers: ProviderProfile[];
+  selectedProviderId: string | null;
+  onSelectProvider: (providerId: string | null) => void;
   onSessionCreated?: (session: SessionSummary) => void;
 };
 
@@ -28,7 +31,16 @@ const quickActions: Array<{ label: string; icon: IconName; prompt: string }> = [
   { label: "Spreadsheet", icon: "spreadsheet", prompt: "ช่วยวิเคราะห์ข้อมูลตารางใน workspace นี้" },
 ];
 
-export function Chat({ folder, sessionId, resumeLatest, localApi, onSessionCreated }: Props) {
+export function Chat({
+  folder,
+  sessionId,
+  resumeLatest,
+  localApi,
+  providers,
+  selectedProviderId,
+  onSelectProvider,
+  onSessionCreated,
+}: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
@@ -43,6 +55,7 @@ export function Chat({ folder, sessionId, resumeLatest, localApi, onSessionCreat
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const hasConversation = messages.length > 0;
+  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? null;
 
   useEffect(() => {
     let disposed = false;
@@ -103,6 +116,7 @@ export function Chat({ folder, sessionId, resumeLatest, localApi, onSessionCreat
           if (disposed) return;
           setConversationId(session.id);
           setMessages(session.messages);
+          if (session.providerProfileId) onSelectProvider(session.providerProfileId);
           replayEvents(replayed.map((entry) => entry.event));
         }
       })
@@ -196,7 +210,10 @@ export function Chat({ folder, sessionId, resumeLatest, localApi, onSessionCreat
   async function ensureHttpSession(title: string) {
     if (!folder || !localApi) throw new Error("Local API is not ready");
     if (conversationId) return conversationId;
-    const session = await localApi.createSession(folder, title);
+    const session = await localApi.createSession(folder, title, {
+      providerProfileId: selectedProvider?.id ?? null,
+      model: selectedProvider?.model ?? null,
+    });
     setConversationId(session.id);
     onSessionCreated?.(session);
     return session.id;
@@ -208,7 +225,13 @@ export function Chat({ folder, sessionId, resumeLatest, localApi, onSessionCreat
     eventSourceRef.current?.close();
     eventSourceRef.current = localApi.openSessionEvents(sessionId, handleAgentEvent);
     await waitForEventSourceOpen(eventSourceRef.current);
-    const result = await localApi.sendMessage(sessionId, { message: content, workspace: folder, runId });
+    const result = await localApi.sendMessage(sessionId, {
+      message: content,
+      workspace: folder,
+      runId,
+      providerProfileId: selectedProvider?.id ?? null,
+      model: selectedProvider?.model ?? null,
+    });
     setConversationId(result.conversationId);
     if (result.status === "cancelled") {
       setMessages((current) => [...current, { role: "assistant", content: "Task cancelled." }]);
@@ -324,6 +347,7 @@ export function Chat({ folder, sessionId, resumeLatest, localApi, onSessionCreat
           <p>Plan, build, and finish real work with your agent team.</p>
           <Composer
             folder={folder} input={input} inputRef={inputRef} running={running}
+            providers={providers} selectedProviderId={selectedProviderId} onSelectProvider={onSelectProvider}
             onChange={setInput} onInput={resizeInput} onKeyDown={handleKeyDown}
             onSend={send} onCancel={cancelRun}
           />
@@ -374,6 +398,7 @@ export function Chat({ folder, sessionId, resumeLatest, localApi, onSessionCreat
           <div className="composer-dock">
             <Composer
               folder={folder} input={input} inputRef={inputRef} running={running}
+              providers={providers} selectedProviderId={selectedProviderId} onSelectProvider={onSelectProvider}
               onChange={setInput} onInput={resizeInput} onKeyDown={handleKeyDown}
               onSend={send} onCancel={cancelRun}
             />
@@ -422,6 +447,9 @@ type ComposerProps = {
   input: string;
   inputRef: React.RefObject<HTMLTextAreaElement>;
   running: boolean;
+  providers: ProviderProfile[];
+  selectedProviderId: string | null;
+  onSelectProvider: (providerId: string | null) => void;
   onChange: (value: string) => void;
   onInput: (event: React.FormEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -429,7 +457,21 @@ type ComposerProps = {
   onCancel: () => Promise<void>;
 };
 
-function Composer({ folder, input, inputRef, running, onChange, onInput, onKeyDown, onSend, onCancel }: ComposerProps) {
+function Composer({
+  folder,
+  input,
+  inputRef,
+  running,
+  providers,
+  selectedProviderId,
+  onSelectProvider,
+  onChange,
+  onInput,
+  onKeyDown,
+  onSend,
+  onCancel,
+}: ComposerProps) {
+  const enabledProviders = providers.filter((provider) => provider.enabled);
   return (
     <div className={`composer${!folder ? " composer--disabled" : ""}`}>
       <textarea
@@ -446,7 +488,21 @@ function Composer({ folder, input, inputRef, running, onChange, onInput, onKeyDo
         <div className="composer-settings">
           <button type="button" className="thinking-mode"><Icon name="brain" size={17} />Thinking</button>
           <span className="toolbar-separator" />
-          <button type="button" className="model-selector">Auto<Icon name="chevronDown" size={14} /></button>
+          <label className="model-selector" aria-label="Model">
+            <select
+              value={selectedProviderId ?? ""}
+              disabled={enabledProviders.length === 0}
+              onChange={(event) => onSelectProvider(event.target.value || null)}
+            >
+              <option value="">Auto</option>
+              {enabledProviders.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name} · {provider.model}
+                </option>
+              ))}
+            </select>
+            <Icon name="chevronDown" size={14} />
+          </label>
           <button
             type="button"
             className={`send-button${running ? " send-button--stop" : ""}`}

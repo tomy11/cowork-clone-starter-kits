@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Chat } from "./components/Chat";
+import { ProviderSettings } from "./components/ProviderSettings";
 import { Sidebar } from "./components/Sidebar";
 import { Icon } from "./components/Icon";
-import { LocalApiClient, type McpServerSummary, type SessionSummary, type SkillSummary } from "./lib/local-api";
+import { LocalApiClient, type McpServerSummary, type ProviderProfile, type SessionSummary, type SkillSummary } from "./lib/local-api";
 
 type SidecarBootstrap = { httpUrl: string };
 
@@ -16,6 +17,9 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [localApi, setLocalApi] = useState<LocalApiClient | null>(null);
+  const [providers, setProviders] = useState<ProviderProfile[]>([]);
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [chatKey, setChatKey] = useState(0);
   const [resumeLatest, setResumeLatest] = useState(true);
 
@@ -25,14 +29,19 @@ export default function App() {
       const api = new LocalApiClient(bootstrap.httpUrl);
       await api.waitForHealth();
       setLocalApi(api);
-      const [folders, skillsResult, toolsResult, mcpResult] = await Promise.all([
+      const [folders, providersResult, skillsResult, toolsResult, mcpResult] = await Promise.all([
         api.listWorkspaces(),
+        api.listProviders(),
         invoke<{ skills: SkillSummary[] }>("list_skills"),
         invoke<{ tools: string[] }>("list_tools"),
         invoke<{ servers: McpServerSummary[] }>("call_sidecar", { method: "mcp_status", params: {} }),
       ]);
 
       setGrantedFolders(folders);
+      setProviders(providersResult);
+      setSelectedProviderId((current) =>
+        current ?? providersResult.find((provider) => provider.isDefault)?.id ?? providersResult[0]?.id ?? null,
+      );
       setSelectedFolder((current) => current ?? folders[0] ?? null);
       setSkills(skillsResult.skills ?? []);
       setTools(toolsResult.tools ?? []);
@@ -66,6 +75,17 @@ export default function App() {
         : activeSession && nextSessions.some((session) => session.id === activeSession.id)
           ? activeSession.id
           : nextSessions[0]?.id ?? null,
+    );
+  }
+
+  async function refreshProviders() {
+    if (!localApi) return;
+    const nextProviders = await localApi.listProviders();
+    setProviders(nextProviders);
+    setSelectedProviderId((current) =>
+      current && nextProviders.some((provider) => provider.id === current)
+        ? current
+        : nextProviders.find((provider) => provider.isDefault)?.id ?? nextProviders[0]?.id ?? null,
     );
   }
 
@@ -124,6 +144,9 @@ export default function App() {
             <button className="icon-button" aria-label="Task notes" title="Task notes">
               <Icon name="document" size={17} />
             </button>
+            <button className="icon-button" type="button" aria-label="Provider settings" title="Provider settings" onClick={() => setSettingsOpen(true)}>
+              <Icon name="settings" size={17} />
+            </button>
             <button className="download-button" type="button">
               <Icon name="download" size={17} />
               Export
@@ -137,6 +160,9 @@ export default function App() {
           sessionId={selectedSessionId}
           resumeLatest={resumeLatest}
           localApi={localApi}
+          providers={providers}
+          selectedProviderId={selectedProviderId}
+          onSelectProvider={setSelectedProviderId}
           onSessionCreated={(session) => {
             setSelectedSessionId(session.id);
             void localApi?.setActiveSession(session.workspace, session.id);
@@ -144,6 +170,25 @@ export default function App() {
           }}
         />
       </main>
+
+      {settingsOpen && (
+        <ProviderSettings
+          localApi={localApi}
+          providers={providers}
+          selectedProviderId={selectedProviderId}
+          onClose={() => setSettingsOpen(false)}
+          onSelectProvider={setSelectedProviderId}
+          onProvidersChange={(nextProviders) => {
+            setProviders(nextProviders);
+            setSelectedProviderId((current) =>
+              current && nextProviders.some((provider) => provider.id === current)
+                ? current
+                : nextProviders.find((provider) => provider.isDefault)?.id ?? nextProviders[0]?.id ?? null,
+            );
+          }}
+          onRefreshProviders={() => void refreshProviders()}
+        />
+      )}
     </div>
   );
 }

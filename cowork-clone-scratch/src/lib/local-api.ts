@@ -7,6 +7,8 @@ export type SessionSummary = {
   title: string;
   messages: Message[];
   archived: boolean;
+  providerProfileId: string | null;
+  model: string | null;
   updatedAt: string;
 };
 export type AgentEvent = { kind: string; runId?: string; conversationId?: string; [key: string]: unknown };
@@ -27,6 +29,30 @@ export type WorkspaceMetadata = {
   grantedAt: string;
   updatedAt: string | null;
 };
+export type ProviderType = "claude" | "openai-compatible" | "ollama" | "mock";
+export type ProviderProfile = {
+  id: string;
+  type: ProviderType;
+  name: string;
+  model: string;
+  baseUrl: string | null;
+  hasApiKey: boolean;
+  enabled: boolean;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+export type ProviderProfileInput = {
+  type: ProviderType;
+  name: string;
+  model: string;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+  enabled?: boolean;
+  isDefault?: boolean;
+};
+export type ProviderTestResult = { ok: boolean; status: string; detail: string };
+export type ProviderModelsResult = { ok: boolean; status: string; models: string[]; detail: string };
 export type RunResult = {
   events: AgentEvent[];
   runId: string;
@@ -71,6 +97,38 @@ export class LocalApiClient {
     await this.post<{ ok: boolean }>("/workspaces", { folder });
   }
 
+  async listProviders() {
+    const result = await this.get<{ providers: ProviderProfile[] }>("/providers");
+    return result.providers;
+  }
+
+  async createProvider(input: ProviderProfileInput) {
+    const result = await this.post<{ provider: ProviderProfile }>("/providers", input);
+    return result.provider;
+  }
+
+  async updateProvider(providerId: string, input: Partial<ProviderProfileInput>) {
+    const result = await this.patch<{ provider: ProviderProfile }>(`/providers/${encodeURIComponent(providerId)}`, input);
+    return result.provider;
+  }
+
+  async deleteProvider(providerId: string) {
+    await this.delete<{ ok: boolean }>(`/providers/${encodeURIComponent(providerId)}`);
+  }
+
+  async setDefaultProvider(providerId: string) {
+    const result = await this.post<{ provider: ProviderProfile }>(`/providers/${encodeURIComponent(providerId)}/default`, {});
+    return result.provider;
+  }
+
+  async testProvider(providerId: string) {
+    return this.post<ProviderTestResult>(`/providers/${encodeURIComponent(providerId)}/test`, {});
+  }
+
+  async listProviderModels(providerId: string) {
+    return this.get<ProviderModelsResult>(`/providers/${encodeURIComponent(providerId)}/models`);
+  }
+
   async listSessions(workspace?: string, options: { includeArchived?: boolean } = {}) {
     const params = new URLSearchParams();
     if (workspace) params.set("workspace", workspace);
@@ -100,8 +158,8 @@ export class LocalApiClient {
     return result.session;
   }
 
-  async createSession(workspace: string, title: string) {
-    const result = await this.post<{ conversation: SessionSummary }>("/sessions", { workspace, title });
+  async createSession(workspace: string, title: string, options: { providerProfileId?: string | null; model?: string | null } = {}) {
+    const result = await this.post<{ conversation: SessionSummary }>("/sessions", { workspace, title, ...options });
     return result.conversation;
   }
 
@@ -119,7 +177,13 @@ export class LocalApiClient {
     await this.delete<{ ok: boolean }>(`/sessions/${encodeURIComponent(sessionId)}`);
   }
 
-  async sendMessage(sessionId: string, input: { message: string; workspace: string; runId: string }) {
+  async sendMessage(sessionId: string, input: {
+    message: string;
+    workspace: string;
+    runId: string;
+    providerProfileId?: string | null;
+    model?: string | null;
+  }) {
     return this.post<RunResult>(`/sessions/${encodeURIComponent(sessionId)}/messages`, input);
   }
 
@@ -173,7 +237,7 @@ export class LocalApiClient {
     return this.request<T>(path, { method: "GET" });
   }
 
-  private async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  private async post<T>(path: string, body: object): Promise<T> {
     return this.request<T>(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -181,7 +245,7 @@ export class LocalApiClient {
     });
   }
 
-  private async patch<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  private async patch<T>(path: string, body: object): Promise<T> {
     return this.request<T>(path, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

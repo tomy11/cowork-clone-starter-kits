@@ -5,7 +5,15 @@ describe("WorkspaceStore", () => {
   it("persists workspaces and conversation messages", () => {
     const store = new WorkspaceStore(":memory:");
     store.grantWorkspace("/tmp/example-workspace");
-    const conversationId = store.ensureConversation("/tmp/example-workspace", "Plan this project");
+    const provider = store.createProviderProfile({
+      type: "mock",
+      name: "Mock",
+      model: "mock",
+    });
+    const conversationId = store.ensureConversation("/tmp/example-workspace", "Plan this project", undefined, {
+      providerProfileId: provider.id,
+      model: "mock",
+    });
     store.addMessage(conversationId, "user", "Plan this project");
     store.addMessage(conversationId, "assistant", "Here is the plan");
 
@@ -22,6 +30,8 @@ describe("WorkspaceStore", () => {
     expect(store.latestConversation("/tmp/example-workspace")).toMatchObject({
       id: conversationId,
       title: "Plan this project",
+      providerProfileId: provider.id,
+      model: "mock",
       messages: [
         { role: "user", content: "Plan this project" },
         { role: "assistant", content: "Here is the plan" },
@@ -65,6 +75,35 @@ describe("WorkspaceStore", () => {
 
     expect(store.archiveConversation(first, true)?.archived).toBe(true);
     expect(store.getActiveConversation("/tmp/example-workspace")?.id).toBe(second);
+    store.close();
+  });
+
+  it("manages provider profiles and default selection", () => {
+    const store = new WorkspaceStore(":memory:");
+    const claude = store.createProviderProfile({
+      type: "claude",
+      name: "Claude",
+      model: "claude-sonnet-4-5",
+      apiKey: "anthropic-key",
+    });
+    const ollama = store.createProviderProfile({
+      type: "ollama",
+      name: "Local Ollama",
+      model: "llama3.2",
+      baseUrl: "http://localhost:11434/v1",
+    });
+
+    expect(claude).toMatchObject({ type: "claude", hasApiKey: true, isDefault: true });
+    expect(store.getProviderProfileWithSecret(claude.id)?.apiKey).toBe("anthropic-key");
+    expect(store.setDefaultProviderProfile(ollama.id)?.isDefault).toBe(true);
+    expect(store.getDefaultProviderProfile()?.id).toBe(ollama.id);
+
+    const updated = store.updateProviderProfile(ollama.id, { name: "Ollama", model: "qwen2.5" });
+    expect(updated).toMatchObject({ name: "Ollama", model: "qwen2.5", isDefault: true });
+
+    expect(store.deleteProviderProfile(ollama.id)).toBe(true);
+    expect(store.getDefaultProviderProfile()?.id).toBe(claude.id);
+    expect(store.listProviderProfiles()).toHaveLength(1);
     store.close();
   });
 });

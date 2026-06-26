@@ -8,7 +8,14 @@ import { AuditLog } from "./permissions/audit.js";
 import { ClaudeProvider } from "./llm/claude.js";
 import { OpenAICompatProvider } from "./llm/openai-compatible.js";
 import { SkillsLoader } from "./skills/loader.js";
-import { WorkspaceStore, type StoredConversation } from "./storage/workspace-store.js";
+import {
+  WorkspaceStore,
+  type ProviderProfileInput,
+  type ProviderProfileSecret,
+  type ProviderProfileUpdate,
+  type ProviderType,
+  type StoredConversation,
+} from "./storage/workspace-store.js";
 import { withWorkspaceContext } from "./workspace-context.js";
 import { McpManager } from "./mcp/manager.js";
 import type { LLMProvider } from "./llm/provider.js";
@@ -33,6 +40,7 @@ export type PendingApproval = {
 
 export type AppRuntimeConfig = {
   llm: LLMProvider;
+  fallbackProvider?: RunProviderMetadata;
   acl: PermissionACL;
   audit: AuditLog;
   store: WorkspaceStore;
@@ -48,20 +56,26 @@ type PendingConfirmation = PendingApproval & {
 
 type SessionListener = (event: AppEvent) => void;
 
+type RunProviderMetadata = {
+  providerProfileId: string | null;
+  providerName: string;
+  providerType: ProviderType | "env";
+  model: string;
+};
+
+type ProviderModelsResult = {
+  ok: boolean;
+  status: string;
+  models: string[];
+  detail: string;
+};
+
 export class AppRuntime {
-  private orchestrator: Orchestrator;
   private activeRuns = new Map<string, AbortController>();
   private pendingConfirmations = new Map<string, PendingConfirmation>();
   private sessionListeners = new Map<string, Set<SessionListener>>();
 
-  constructor(private cfg: AppRuntimeConfig) {
-    this.orchestrator = cfg.orchestrator ?? new Orchestrator({
-      llm: cfg.llm,
-      acl: cfg.acl,
-      audit: cfg.audit,
-      tools: cfg.tools,
-    });
-  }
+  constructor(private cfg: AppRuntimeConfig) {}
 
   async handle(request: RpcRequest, onEvent?: (event: AppEvent) => void): Promise<RpcResponse> {
     try {
@@ -93,6 +107,10 @@ export class AppRuntime {
             workspace,
             String(request.params.title ?? "New task"),
             request.params.conversationId ? String(request.params.conversationId) : undefined,
+            {
+              providerProfileId: optionalString(request.params.providerProfileId),
+              model: optionalString(request.params.model),
+            },
           );
           return { id: request.id, result: { conversation: this.cfg.store.getConversation(conversationId) } };
         }
@@ -180,6 +198,48 @@ export class AppRuntime {
           return { id: request.id, result: { ok: true } };
         }
 
+        case "list_provider_profiles":
+          return { id: request.id, result: { providers: this.listProviderProfiles() } };
+
+        case "create_provider_profile":
+          return {
+            id: request.id,
+            result: { provider: this.createProviderProfile(request.params as ProviderProfileInput) },
+          };
+
+        case "update_provider_profile": {
+          const provider = this.updateProviderProfile(
+            String(request.params.providerId),
+            request.params.profile as ProviderProfileUpdate,
+          );
+          if (!provider) return { id: request.id, error: { message: "Provider profile not found", code: 404 } };
+          return { id: request.id, result: { provider } };
+        }
+
+        case "delete_provider_profile": {
+          const deleted = this.deleteProviderProfile(String(request.params.providerId));
+          if (!deleted) return { id: request.id, error: { message: "Provider profile not found", code: 404 } };
+          return { id: request.id, result: { ok: true } };
+        }
+
+        case "set_default_provider_profile": {
+          const provider = this.setDefaultProviderProfile(String(request.params.providerId));
+          if (!provider) return { id: request.id, error: { message: "Provider profile not found", code: 404 } };
+          return { id: request.id, result: { provider } };
+        }
+
+        case "test_provider_profile": {
+          const result = this.testProviderProfile(String(request.params.providerId));
+          if (!result) return { id: request.id, error: { message: "Provider profile not found", code: 404 } };
+          return { id: request.id, result };
+        }
+
+        case "list_provider_models": {
+          const result = await this.listProviderModels(String(request.params.providerId));
+          if (!result) return { id: request.id, error: { message: "Provider profile not found", code: 404 } };
+          return { id: request.id, result };
+        }
+
         case "list_approvals":
           return { id: request.id, result: { approvals: this.listApprovals() } };
 
@@ -235,6 +295,67 @@ export class AppRuntime {
 
   listConversationEvents(conversationId: string, options: { afterId?: number } = {}) {
     return this.cfg.store.listEvents(conversationId, options);
+  }
+
+  listProviderProfiles() {
+    return this.cfg.store.listProviderProfiles();
+  }
+
+  createProviderProfile(input: ProviderProfileInput) {
+    return this.cfg.store.createProviderProfile(input);
+  }
+
+  updateProviderProfile(id: string, input: ProviderProfileUpdate) {
+    return this.cfg.store.updateProviderProfile(id, input);
+  }
+
+  deleteProviderProfile(id: string) {
+    return this.cfg.store.deleteProviderProfile(id);
+  }
+
+  setDefaultProviderProfile(id: string) {
+    return this.cfg.store.setDefaultProviderProfile(id);
+  }
+
+  testProviderProfile(id: string): { ok: boolean; status: string; detail: string } | null {
+    const provider = this.cfg.store.getProviderProfileWithSecret(id);
+    if (!provider) return null;
+    const readiness = validateProviderReadiness(provider.type, {
+      apiKey: provider.apiKey,
+      baseUrl: provider.baseUrl,
+      model: provider.model,
+    });
+    return readiness.ok
+      ? { ok: true, status: "ready", detail: `${provider.name} is configured for ${provider.model}` }
+      : { ok: false, status: "configuration_error", detail: readiness.detail };
+  }
+
+  async listProviderModels(id: string): Promise<ProviderModelsResult | null> {
+    const provider = this.cfg.store.getProviderProfileWithSecret(id);
+    if (!provider) return null;
+    if (provider.type === "mock") {
+      return { ok: true, status: "ready", models: ["mock"], detail: "Mock provider has one deterministic model" };
+    }
+    if (provider.type === "claude" && !provider.baseUrl) {
+      return {
+        ok: true,
+        status: "preset",
+        models: ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"],
+        detail: "Claude presets loaded",
+      };
+    }
+    const readiness = validateProviderReadiness(provider.type, {
+      apiKey: provider.apiKey,
+      baseUrl: provider.baseUrl,
+      model: provider.model,
+    });
+    if (!readiness.ok) {
+      return { ok: false, status: "configuration_error", models: [], detail: readiness.detail };
+    }
+    if (!provider.baseUrl) {
+      return { ok: false, status: "unsupported", models: [], detail: "Model refresh requires a base URL" };
+    }
+    return fetchOpenAICompatibleModels(provider);
   }
 
   listApprovals(): PendingApproval[] {
@@ -298,14 +419,32 @@ export class AppRuntime {
       : null;
     const history = existing?.messages ?? (Array.isArray(request.params.history) ? request.params.history : []);
     const rawMessage = String(request.params.message ?? "");
-    const conversationId = this.cfg.store.ensureConversation(workspace, rawMessage, requestedConversationId);
+    const providerProfileId = optionalString(request.params.providerProfileId) ?? existing?.providerProfileId ?? undefined;
+    const requestedModel = optionalString(request.params.model) ?? existing?.model ?? undefined;
+    const providerSelection = this.resolveProvider(providerProfileId, requestedModel);
+    if (!providerSelection) {
+      return { id: request.id, error: { message: "Provider profile not found", code: 404 } };
+    }
+    if (providerSelection.error) {
+      return { id: request.id, error: { message: providerSelection.error, code: 400 } };
+    }
+
+    const conversationId = this.cfg.store.ensureConversation(workspace, rawMessage, requestedConversationId, {
+      providerProfileId: providerSelection.metadata.providerProfileId,
+      model: providerSelection.metadata.model,
+    });
     this.cfg.store.setActiveConversation(workspace, conversationId);
     this.cfg.store.addMessage(conversationId, "user", rawMessage);
     this.cfg.store.startTask(runId, conversationId);
+    this.cfg.store.setConversationProvider(conversationId, {
+      providerProfileId: providerSelection.metadata.providerProfileId,
+      model: providerSelection.metadata.model,
+    });
 
     const events: AppEvent[] = [];
     let status: "done" | "failed" | "cancelled" = "done";
     let finalContent = "";
+    const orchestrator = this.createOrchestrator(providerSelection.llm);
 
     const emit = (event: AppEvent) => {
       const enriched = { ...event, runId, conversationId } as AppEvent;
@@ -315,14 +454,22 @@ export class AppRuntime {
       this.publishSessionEvent(conversationId, enriched);
     };
 
-    emit({ kind: "run_started", runId, conversationId });
+    emit({
+      kind: "run_started",
+      runId,
+      conversationId,
+      providerProfileId: providerSelection.metadata.providerProfileId,
+      providerName: providerSelection.metadata.providerName,
+      providerType: providerSelection.metadata.providerType,
+      model: providerSelection.metadata.model,
+    });
 
     try {
       const mcpServers = await this.cfg.mcp.connectEnabled(workspace);
       emit({ kind: "mcp_status", servers: mcpServers });
       const availableSkills = await this.cfg.skills.list();
       const contextualMessage = withWorkspaceContext(rawMessage, workspace);
-      for await (const event of this.orchestrator.run(contextualMessage, history, {
+      for await (const event of orchestrator.run(contextualMessage, history, {
         signal: controller.signal,
         availableSkills,
         loadSkill: (name) => this.cfg.skills.load(name),
@@ -389,6 +536,48 @@ export class AppRuntime {
     if (!listeners) return;
     for (const listener of listeners) listener(event);
   }
+
+  private createOrchestrator(llm: LLMProvider) {
+    if (this.cfg.orchestrator && llm === this.cfg.llm) return this.cfg.orchestrator;
+    return new Orchestrator({
+      llm,
+      acl: this.cfg.acl,
+      audit: this.cfg.audit,
+      tools: this.cfg.tools,
+    });
+  }
+
+  private resolveProvider(providerProfileId?: string, modelOverride?: string): {
+    llm: LLMProvider;
+    metadata: RunProviderMetadata;
+    error?: string;
+  } | null {
+    const profile = providerProfileId
+      ? this.cfg.store.getProviderProfileWithSecret(providerProfileId)
+      : this.cfg.store.getDefaultProviderProfileWithSecret();
+    if (!profile) {
+      if (providerProfileId) return null;
+      const fallback = this.cfg.fallbackProvider ?? {
+        providerProfileId: null,
+        providerName: this.cfg.llm.name,
+        providerType: "env" as const,
+        model: "env",
+      };
+      return {
+        llm: this.cfg.llm,
+        metadata: { ...fallback, model: modelOverride ?? fallback.model },
+      };
+    }
+    if (!profile.enabled) return { llm: this.cfg.llm, metadata: profileMetadata(profile, modelOverride), error: "Provider profile is disabled" };
+    const metadata = profileMetadata(profile, modelOverride);
+    const readiness = validateProviderReadiness(profile.type, {
+      apiKey: profile.apiKey,
+      baseUrl: profile.baseUrl,
+      model: metadata.model,
+    });
+    if (!readiness.ok) return { llm: this.cfg.llm, metadata, error: readiness.detail };
+    return { llm: createLLMFromProviderProfile(profile, metadata.model), metadata };
+  }
 }
 
 export function createRuntimeFromEnv(env: NodeJS.ProcessEnv = process.env) {
@@ -404,20 +593,116 @@ export function createRuntimeFromEnv(env: NodeJS.ProcessEnv = process.env) {
   const mcp = new McpManager(path.join(resourceRoot, "mcp.json"), tools);
   const provider = env.LLM_PROVIDER ?? "claude";
   let llm: LLMProvider;
+  let fallbackProvider: RunProviderMetadata;
   if (provider === "claude") {
+    const model = env.CLAUDE_MODEL ?? "claude-sonnet-4-5";
     llm = new ClaudeProvider({
       apiKey: env.ANTHROPIC_API_KEY!,
-      model: env.CLAUDE_MODEL ?? "claude-sonnet-4-5",
+      model,
     });
+    fallbackProvider = { providerProfileId: null, providerName: "Claude env", providerType: "env", model };
   } else if (provider === "mock" && env.NODE_ENV === "test") {
     llm = new MockProvider();
+    fallbackProvider = { providerProfileId: null, providerName: "Mock env", providerType: "env", model: "mock" };
   } else {
+    const model = env.LLM_MODEL ?? "gpt-4o";
     llm = new OpenAICompatProvider({
       apiKey: env.LLM_API_KEY!,
       baseURL: env.LLM_BASE_URL,
-      model: env.LLM_MODEL ?? "gpt-4o",
+      model,
     });
+    fallbackProvider = { providerProfileId: null, providerName: "OpenAI-compatible env", providerType: "env", model };
   }
 
-  return new AppRuntime({ llm, acl, audit, store, tools, skills, mcp });
+  return new AppRuntime({ llm, fallbackProvider, acl, audit, store, tools, skills, mcp });
+}
+
+function createLLMFromProviderProfile(profile: ProviderProfileSecret, model: string): LLMProvider {
+  if (profile.type === "mock") return new MockProvider();
+  if (profile.type === "claude") {
+    return new ClaudeProvider({
+      apiKey: profile.apiKey!,
+      baseURL: profile.baseUrl ?? undefined,
+      model,
+    });
+  }
+  return new OpenAICompatProvider({
+    apiKey: profile.apiKey || "ollama",
+    baseURL: profile.baseUrl ?? undefined,
+    model,
+  });
+}
+
+async function fetchOpenAICompatibleModels(profile: ProviderProfileSecret): Promise<ProviderModelsResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2_000);
+  try {
+    const response = await fetch(joinUrl(profile.baseUrl!, "models"), {
+      headers: profile.apiKey ? { Authorization: `Bearer ${profile.apiKey}` } : undefined,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: "request_failed",
+        models: [],
+        detail: `Model list request failed with HTTP ${response.status}`,
+      };
+    }
+    const body = await response.json() as { data?: Array<{ id?: unknown }>; models?: unknown[] };
+    const models = Array.isArray(body.data)
+      ? body.data.map((entry) => entry.id).filter((id): id is string => typeof id === "string")
+      : Array.isArray(body.models)
+        ? body.models.filter((id): id is string => typeof id === "string")
+        : [];
+    return models.length > 0
+      ? { ok: true, status: "ready", models, detail: `${models.length} models found` }
+      : { ok: false, status: "empty", models: [], detail: "No models were returned by this endpoint" };
+  } catch (error) {
+    const isAbort = error instanceof Error && error.name === "AbortError";
+    const detail = profile.type === "ollama"
+      ? "Could not reach Ollama. Check that Ollama is running and the base URL is correct."
+      : `Could not reach model endpoint: ${error instanceof Error ? error.message : String(error)}`;
+    return { ok: false, status: isAbort ? "timeout" : "unreachable", models: [], detail };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function joinUrl(baseUrl: string, segment: string) {
+  return `${baseUrl.replace(/\/+$/, "")}/${segment.replace(/^\/+/, "")}`;
+}
+
+function profileMetadata(profile: ProviderProfileSecret, modelOverride?: string): RunProviderMetadata {
+  return {
+    providerProfileId: profile.id,
+    providerName: profile.name,
+    providerType: profile.type,
+    model: modelOverride ?? profile.model,
+  };
+}
+
+function optionalString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function validateProviderReadiness(
+  type: ProviderType,
+  cfg: { apiKey: string | null; baseUrl: string | null; model: string },
+) {
+  if (!cfg.model.trim()) return { ok: false, detail: "Model is required" };
+  if (type === "mock") return { ok: true, detail: "Mock provider is ready" };
+  if (type === "claude") {
+    return cfg.apiKey
+      ? { ok: true, detail: "Claude provider is configured" }
+      : { ok: false, detail: "Anthropic API key is required" };
+  }
+  if (type === "ollama") {
+    return cfg.baseUrl
+      ? { ok: true, detail: "Ollama-compatible endpoint is configured" }
+      : { ok: false, detail: "Ollama base URL is required" };
+  }
+  return cfg.apiKey
+    ? { ok: true, detail: "OpenAI-compatible provider is configured" }
+    : { ok: false, detail: "API key is required" };
 }
