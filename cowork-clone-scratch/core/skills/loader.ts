@@ -45,19 +45,8 @@ export class SkillsLoader {
       const skills: SkillMetadata[] = [];
       for (const e of entries) {
         if (!e.isDirectory()) continue;
-        const skillMd = path.join(this.skillsRoot, e.name, "SKILL.md");
-        try {
-          const raw = await fs.readFile(skillMd, "utf-8");
-          const meta = this.parseFrontmatter(raw);
-          skills.push({
-            name: typeof meta.name === "string" ? meta.name : e.name,
-            description: typeof meta.description === "string" ? meta.description : "",
-            path: path.join(this.skillsRoot, e.name),
-            raw: meta,
-          });
-        } catch {
-          // skip folders ที่ไม่มี SKILL.md
-        }
+        const metadata = await this.metadataFromPath(path.join(this.skillsRoot, e.name), e.name);
+        if (metadata) skills.push(metadata);
       }
       return skills;
     } catch {
@@ -65,13 +54,37 @@ export class SkillsLoader {
     }
   }
 
+  async metadataFromPath(skillDir: string, nameHint = path.basename(skillDir)): Promise<SkillMetadata | null> {
+    const skillMd = path.join(skillDir, "SKILL.md");
+    try {
+      const raw = await fs.readFile(skillMd, "utf-8");
+      const meta = this.parseFrontmatter(raw);
+      return {
+        name: typeof meta.name === "string" ? meta.name : nameHint,
+        description: typeof meta.description === "string" ? meta.description : "",
+        path: skillDir,
+        raw: meta,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * โหลด skill เต็ม (instruction + resources) — เรียกตอน activate
    */
   async load(name: string): Promise<Skill> {
-    if (this.cache.has(name)) return this.cache.get(name)!;
-
     const skillDir = path.join(this.skillsRoot, name);
+    return this.loadSkillFromPath(skillDir, name, name);
+  }
+
+  async loadFromPath(skillDir: string, nameHint = path.basename(skillDir)): Promise<Skill> {
+    return this.loadSkillFromPath(skillDir, nameHint, `path:${path.resolve(skillDir)}`);
+  }
+
+  private async loadSkillFromPath(skillDir: string, nameHint: string, cacheKey: string): Promise<Skill> {
+    if (this.cache.has(cacheKey)) return this.cache.get(cacheKey)!;
+
     const skillMd = path.join(skillDir, "SKILL.md");
 
     const raw = await fs.readFile(skillMd, "utf-8");
@@ -91,7 +104,7 @@ export class SkillsLoader {
     }
 
     const skill: Skill = {
-      name: typeof meta.name === "string" ? meta.name : name,
+      name: typeof meta.name === "string" ? meta.name : nameHint,
       description: typeof meta.description === "string" ? meta.description : "",
       path: skillDir,
       raw: meta,
@@ -99,7 +112,7 @@ export class SkillsLoader {
       resources,
     };
 
-    this.cache.set(name, skill);
+    this.cache.set(cacheKey, skill);
     return skill;
   }
 

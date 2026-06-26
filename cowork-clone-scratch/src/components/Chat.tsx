@@ -1,8 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { Icon, type IconName } from "./Icon";
-import type { AgentEvent, LocalApiClient, Message, ProviderProfile, SessionSummary } from "../lib/local-api";
+import type {
+  AgentEvent,
+  ArtifactPreviewResult,
+  ArtifactSummary,
+  LocalApiClient,
+  Message,
+  ProviderProfile,
+  SessionSummary,
+} from "../lib/local-api";
 
 type BridgeEvent = { requestId: string; event: AgentEvent };
 type Confirmation = { id: string; prompt: string };
@@ -47,6 +56,9 @@ export function Chat({
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [agents, setAgents] = useState<Record<string, AgentProgress>>({});
+  const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([]);
+  const [artifactPreview, setArtifactPreview] = useState<ArtifactPreviewResult | null>(null);
+  const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -54,7 +66,7 @@ export function Chat({
   const activeRunId = useRef<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  const hasConversation = messages.length > 0;
+  const hasConversation = messages.length > 0 || Boolean(conversationId);
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? null;
 
   useEffect(() => {
@@ -64,6 +76,7 @@ export function Chat({
       if (disposed || !activeRunId.current || event.runId !== activeRunId.current) return;
       setEvents((current) => [...current, event]);
       applyAgentEvent(event);
+      applyArtifactEvent(event);
 
       if (event.kind === "final" && typeof event.content === "string") {
         const content = event.content;
@@ -100,6 +113,9 @@ export function Chat({
     setConversationId(null);
     setEvents([]);
     setAgents({});
+    setArtifacts([]);
+    setArtifactPreview(null);
+    setPreviewLoadingId(null);
     if (!folder || !localApi) return () => { disposed = true; };
 
     const loader = sessionId
@@ -113,9 +129,11 @@ export function Chat({
         if (disposed) return;
         if (session) {
           const replayed = await localApi.listSessionEvents(session.id);
+          const sessionArtifacts = await localApi.listArtifacts(session.id);
           if (disposed) return;
           setConversationId(session.id);
           setMessages(session.messages);
+          setArtifacts(sessionArtifacts);
           if (session.providerProfileId) onSelectProvider(session.providerProfileId);
           replayEvents(replayed.map((entry) => entry.event));
         }
@@ -179,6 +197,7 @@ export function Chat({
     if (!activeRunId.current || event.runId !== activeRunId.current) return;
     setEvents((current) => [...current, event]);
     applyAgentEvent(event);
+    applyArtifactEvent(event);
 
     if (event.kind === "final" && typeof event.content === "string") {
       const content = event.content;
@@ -197,6 +216,7 @@ export function Chat({
     setConfirmation(null);
     for (const event of replayed) {
       applyAgentEvent(event);
+      applyArtifactEvent(event);
       if (event.kind === "confirmation_requested") {
         if (typeof event.confirmationId === "string" && typeof event.prompt === "string") {
           setConfirmation({ id: event.confirmationId, prompt: event.prompt });
@@ -215,6 +235,7 @@ export function Chat({
       model: selectedProvider?.model ?? null,
     });
     setConversationId(session.id);
+    setArtifacts([]);
     onSessionCreated?.(session);
     return session.id;
   }
@@ -310,6 +331,57 @@ export function Chat({
     }
   }
 
+  async function attachFile() {
+    if (!localApi || !conversationId) return;
+    try {
+      const selected = await open({ multiple: false, directory: false });
+      const filePath = Array.isArray(selected) ? selected[0] : selected;
+      if (!filePath) return;
+      const artifact = await localApi.attachArtifact(conversationId, filePath);
+      setArtifacts((current) => upsertArtifact(current, artifact));
+    } catch (error) {
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", content: `Unable to attach file: ${error instanceof Error ? error.message : String(error)}` },
+      ]);
+    }
+  }
+
+  async function previewArtifact(artifact: ArtifactSummary) {
+    if (!localApi) return;
+    setPreviewLoadingId(artifact.id);
+    try {
+      setArtifactPreview(await localApi.previewArtifact(artifact.id));
+    } catch (error) {
+      addAssistantError("Unable to preview file", error);
+    } finally {
+      setPreviewLoadingId(null);
+    }
+  }
+
+  async function openArtifact(artifact: ArtifactSummary) {
+    try {
+      await invoke("open_path", { path: artifact.path });
+    } catch (error) {
+      addAssistantError("Unable to open file", error);
+    }
+  }
+
+  async function revealArtifact(artifact: ArtifactSummary) {
+    try {
+      await invoke("reveal_path", { path: artifact.path });
+    } catch (error) {
+      addAssistantError("Unable to reveal file", error);
+    }
+  }
+
+  function addAssistantError(prefix: string, error: unknown) {
+    setMessages((current) => [
+      ...current,
+      { role: "assistant", content: `${prefix}: ${error instanceof Error ? error.message : String(error)}` },
+    ]);
+  }
+
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -376,6 +448,19 @@ export function Chat({
                 </section>
               )}
 
+              {(artifacts.length > 0 || (conversationId && localApi)) && (
+                <ArtifactPanel
+                  artifacts={artifacts}
+                  loadingPreviewId={previewLoadingId}
+                  previewId={artifactPreview?.artifact.id ?? null}
+                  onAttach={conversationId && localApi ? attachFile : undefined}
+                  onPreview={localApi ? previewArtifact : undefined}
+                  onOpen={openArtifact}
+                  onReveal={revealArtifact}
+                />
+              )}
+              {artifactPreview && <ArtifactPreviewPanel result={artifactPreview} onClose={() => setArtifactPreview(null)} />}
+
               {messages.map((message, index) => (
                 <article className={`message message--${message.role}`} key={`${message.role}-${index}`}>
                   {message.role === "assistant" && <div className="message-avatar">C</div>}
@@ -415,6 +500,156 @@ export function Chat({
       )}
     </div>
   );
+
+  function applyArtifactEvent(event: AgentEvent) {
+    if (!isArtifactEvent(event)) return;
+    setArtifacts((current) => upsertArtifact(current, event.artifact));
+  }
+}
+
+function ArtifactPanel({
+  artifacts,
+  loadingPreviewId,
+  previewId,
+  onAttach,
+  onPreview,
+  onOpen,
+  onReveal,
+}: {
+  artifacts: ArtifactSummary[];
+  loadingPreviewId: string | null;
+  previewId: string | null;
+  onAttach?: () => Promise<void>;
+  onPreview?: (artifact: ArtifactSummary) => Promise<void>;
+  onOpen?: (artifact: ArtifactSummary) => Promise<void>;
+  onReveal?: (artifact: ArtifactSummary) => Promise<void>;
+}) {
+  return (
+    <section className="artifact-panel" aria-label="Session files">
+      <div className="task-activity-heading">
+        <span>Files</span>
+        <div className="artifact-panel-actions">
+          <small>{artifacts.length}</small>
+          {onAttach && (
+            <button type="button" aria-label="Attach file" onClick={() => void onAttach()}>
+              <Icon name="plus" size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="artifact-list">
+        {artifacts.length === 0 ? (
+          <div className="artifact-empty">No files attached yet</div>
+        ) : (
+          artifacts.map((artifact) => (
+            <div className={`artifact-row${previewId === artifact.id ? " artifact-row--selected" : ""}`} key={artifact.id} title={artifact.path}>
+              <div className="artifact-icon"><Icon name={artifactIcon(artifact)} size={16} /></div>
+              <div>
+                <strong>{artifact.name}</strong>
+                <span>{artifactKindLabel(artifact)} · {formatBytes(artifact.sizeBytes)} · {shortPath(artifact.path)}</span>
+              </div>
+              <small>{artifact.fileType}</small>
+              <div className="artifact-row-actions">
+                {onPreview && (
+                  <button
+                    type="button"
+                    aria-label={`Preview ${artifact.name}`}
+                    disabled={loadingPreviewId === artifact.id}
+                    onClick={() => void onPreview(artifact)}
+                  >
+                    <Icon name="eye" size={13} />
+                  </button>
+                )}
+                {onOpen && (
+                  <button type="button" aria-label={`Open ${artifact.name}`} onClick={() => void onOpen(artifact)}>
+                    <Icon name="external" size={13} />
+                  </button>
+                )}
+                {onReveal && (
+                  <button type="button" aria-label={`Reveal ${artifact.name}`} onClick={() => void onReveal(artifact)}>
+                    <Icon name="folder" size={13} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ArtifactPreviewPanel({ result, onClose }: { result: ArtifactPreviewResult; onClose: () => void }) {
+  const { artifact, preview } = result;
+  return (
+    <section className="artifact-preview" aria-label="File preview">
+      <div className="artifact-preview-heading">
+        <div>
+          <strong>{artifact.name}</strong>
+          <span>{formatBytes(artifact.sizeBytes)} · {shortPath(artifact.path)}</span>
+        </div>
+        <button type="button" aria-label="Close preview" onClick={onClose}><Icon name="x" size={14} /></button>
+      </div>
+      {preview.kind === "text" && (
+        <>
+          <pre>{preview.content}</pre>
+          {preview.truncated && <small>Preview truncated at {formatBytes(preview.limitBytes)}</small>}
+        </>
+      )}
+      {preview.kind === "image" && <img src={preview.dataUrl} alt={artifact.name} />}
+      {(preview.kind === "binary" || preview.kind === "missing") && <p>{preview.message}</p>}
+    </section>
+  );
+}
+
+function isArtifactEvent(event: AgentEvent): event is AgentEvent & { artifact: ArtifactSummary } {
+  return (
+    event.kind === "artifact_created"
+    || event.kind === "artifact_attached"
+    || event.kind === "artifact_updated"
+    || event.kind === "artifact_moved"
+  )
+    && isArtifact(event.artifact);
+}
+
+function isArtifact(value: unknown): value is ArtifactSummary {
+  if (!value || typeof value !== "object") return false;
+  const artifact = value as Partial<ArtifactSummary>;
+  return typeof artifact.id === "string"
+    && typeof artifact.path === "string"
+    && typeof artifact.name === "string"
+    && typeof artifact.kind === "string";
+}
+
+function upsertArtifact(current: ArtifactSummary[], artifact: ArtifactSummary) {
+  const rest = current.filter((item) => item.id !== artifact.id);
+  return [artifact, ...rest];
+}
+
+function artifactIcon(artifact: ArtifactSummary): IconName {
+  if (artifact.mimeType.startsWith("image/")) return "image";
+  if (artifact.fileType === "csv") return "spreadsheet";
+  if (["css", "html", "js", "json", "ts", "tsx", "xml", "yaml", "yml"].includes(artifact.fileType)) return "code";
+  return "document";
+}
+
+function artifactKindLabel(artifact: ArtifactSummary) {
+  if (artifact.kind === "created") return "Created";
+  if (artifact.kind === "attached") return "Attached";
+  if (artifact.kind === "updated") return "Updated";
+  return "Moved";
+}
+
+function formatBytes(size: number | null) {
+  if (size === null) return "unknown size";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function shortPath(filePath: string) {
+  const parts = filePath.split(/[\\/]/).filter(Boolean);
+  return parts.slice(-3).join("/");
 }
 
 function waitForEventSourceOpen(source: EventSource) {

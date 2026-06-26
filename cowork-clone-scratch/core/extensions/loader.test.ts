@@ -142,6 +142,21 @@ describe("ExtensionsLoader", () => {
 
     await expect(new ExtensionsLoader(root).list()).resolves.toEqual([]);
   });
+
+  it("keeps the bundled QA workflow extension ready", async () => {
+    const projectRoot = process.cwd();
+    const extension = await new ExtensionsLoader(path.join(projectRoot, "extensions"), {
+      env: {},
+      resourceRoot: projectRoot,
+    }).get("qa-workflow");
+
+    expect(extension).toMatchObject({
+      id: "qa-workflow",
+      status: "ready",
+      checks: { ready: true, missingEnv: [], missingResources: [] },
+      resources: { skills: ["webapp-testing", "test-master"] },
+    });
+  });
 });
 
 async function createRoot() {

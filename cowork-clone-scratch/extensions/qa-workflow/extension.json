@@ -1,0 +1,39 @@
+{
+  "id": "qa-workflow",
+  "name": "QA Workflow",
+  "description": "Local testing workflow that bundles QA planning and web app verification skills.",
+  "version": "0.1.0",
+  "enabled": true,
+  "resources": {
+    "skills": [
+      "webapp-testing",
+      "test-master"
+    ],
+    "mcp": [],
+    "commands": [
+      {
+        "id": "build",
+        "label": "Build app",
+        "command": "npm run build",
+        "description": "Compile TypeScript and build the Vite frontend."
+      },
+      {
+        "id": "test",
+        "label": "Run tests",
+        "command": "npm test",
+        "description": "Run the Vitest suite."
+      },
+      {
+        "id": "tauri-check",
+        "label": "Check shell",
+        "command": "cargo check",
+        "description": "Check the Tauri shell crate.",
+        "workingDir": "src-tauri"
+      }
+    ]
+  },
+  "setup": {
+    "requiredEnv": [],
+    "instructions": "Optional: configure a Playwright MCP server if you want the webapp-testing skill to drive a browser."
+  }
+}

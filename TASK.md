@@ -31,6 +31,15 @@
 - [x] Local extension manifest loader and HTTP read API
 - [x] Extension registry summary in the sidebar over local manifests
 - [x] Extension setup readiness checks for required env, skills, and MCP references
+- [x] Ready extension skills injected into the runtime skill catalog
+- [x] Bundled QA workflow extension manifest and local extension guide
+- [x] Artifact registry storage and HTTP read API for session file outputs
+- [x] Replayable artifact change events for created, updated, and moved files
+- [x] Session artifact panel UI with live artifact event updates
+- [x] Session file attachment flow with replayable artifact events
+- [x] Artifact preview/open/reveal actions for session files
+- [x] Batch file read/write API scoped to session workspaces
+- [x] Replayable file read/change events for session file workflows
 
 ## Release follow-up
 

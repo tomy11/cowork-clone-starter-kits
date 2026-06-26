@@ -78,6 +78,73 @@ describe("WorkspaceStore", () => {
     store.close();
   });
 
+  it("stores session artifacts with file metadata", () => {
+    const store = new WorkspaceStore(":memory:");
+    store.grantWorkspace("/tmp/example-workspace");
+    const conversationId = store.ensureConversation("/tmp/example-workspace", "Create files");
+    const event = store.addEvent(conversationId, {
+      kind: "tool_result",
+      runId: "run-1",
+      conversationId,
+      name: "write_file",
+    });
+
+    const artifact = store.addArtifact({
+      conversationId,
+      runId: "run-1",
+      sourceEventId: event.id,
+      kind: "created",
+      path: "/tmp/example-workspace/notes.md",
+      toolName: "write_file",
+      metadata: {
+        sizeBytes: 42,
+        fileType: "md",
+        mimeType: "text/markdown",
+      },
+    });
+    const attached = store.addArtifact({
+      conversationId,
+      kind: "attached",
+      path: "/tmp/example-workspace/brief.pdf",
+      toolName: "attach_file",
+      metadata: {
+        sizeBytes: 128,
+        fileType: "pdf",
+        mimeType: "application/pdf",
+      },
+    });
+
+    expect(store.listArtifacts(conversationId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: artifact.id,
+        conversationId,
+        runId: "run-1",
+        sourceEventId: event.id,
+        kind: "created",
+        path: "/tmp/example-workspace/notes.md",
+        name: "notes.md",
+        fileType: "md",
+        mimeType: "text/markdown",
+        sizeBytes: 42,
+        toolName: "write_file",
+      }),
+      expect.objectContaining({
+        id: attached.id,
+        conversationId,
+        runId: null,
+        kind: "attached",
+        path: "/tmp/example-workspace/brief.pdf",
+        name: "brief.pdf",
+        fileType: "pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 128,
+        toolName: "attach_file",
+      }),
+    ]));
+    expect(store.getArtifact(artifact.id)).toMatchObject({ id: artifact.id, path: "/tmp/example-workspace/notes.md" });
+    store.close();
+  });
+
   it("manages provider profiles and default selection", () => {
     const store = new WorkspaceStore(":memory:");
     const claude = store.createProviderProfile({

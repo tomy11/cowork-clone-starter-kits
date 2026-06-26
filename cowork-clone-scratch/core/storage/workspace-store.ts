@@ -35,6 +35,36 @@ export type StoredWorkspaceMetadata = {
   updatedAt: string | null;
 };
 
+export type ArtifactKind = "created" | "updated" | "moved" | "attached";
+
+export type ArtifactInput = {
+  conversationId: string;
+  runId?: string | null;
+  sourceEventId?: number | null;
+  kind: ArtifactKind;
+  path: string;
+  previousPath?: string | null;
+  toolName?: string | null;
+  metadata?: Partial<Pick<StoredArtifact, "fileType" | "mimeType" | "sizeBytes">>;
+};
+
+export type StoredArtifact = {
+  id: string;
+  conversationId: string;
+  runId: string | null;
+  sourceEventId: number | null;
+  kind: ArtifactKind;
+  path: string;
+  previousPath: string | null;
+  name: string;
+  fileType: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  toolName: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ProviderType = "claude" | "openai-compatible" | "ollama" | "mock";
 
 export type ProviderProfileInput = {
@@ -123,6 +153,23 @@ export class WorkspaceStore {
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        run_id TEXT,
+        source_event_id INTEGER,
+        kind TEXT NOT NULL,
+        path TEXT NOT NULL,
+        previous_path TEXT,
+        name TEXT NOT NULL,
+        file_type TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes INTEGER,
+        tool_name TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+      );
       CREATE TABLE IF NOT EXISTS workspace_state (
         workspace TEXT PRIMARY KEY,
         active_conversation_id TEXT,
@@ -143,6 +190,8 @@ export class WorkspaceStore {
       CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations(workspace, updated_at);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id);
       CREATE INDEX IF NOT EXISTS idx_events_conversation ON conversation_events(conversation_id, id);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_conversation ON artifacts(conversation_id, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_path ON artifacts(path);
       CREATE INDEX IF NOT EXISTS idx_provider_profiles_default ON provider_profiles(is_default);
     `);
     this.ensureColumn("conversations", "archived", "INTEGER NOT NULL DEFAULT 0");
@@ -299,6 +348,7 @@ export class WorkspaceStore {
   deleteConversation(id: string): boolean {
     const transaction = this.db.transaction(() => {
       this.db.prepare("UPDATE workspace_state SET active_conversation_id = NULL, updated_at = datetime('now') WHERE active_conversation_id = ?").run(id);
+      this.db.prepare("DELETE FROM artifacts WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM conversation_events WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM tasks WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
@@ -307,12 +357,13 @@ export class WorkspaceStore {
     return transaction();
   }
 
-  addEvent(conversationId: string, event: Record<string, unknown>) {
+  addEvent(conversationId: string, event: Record<string, unknown>): StoredEvent {
     const kind = typeof event.kind === "string" ? event.kind : "event";
     const runId = typeof event.runId === "string" ? event.runId : null;
-    this.db
+    const result = this.db
       .prepare("INSERT INTO conversation_events (conversation_id, run_id, kind, payload) VALUES (?, ?, ?, ?)")
       .run(conversationId, runId, kind, JSON.stringify(event));
+    return this.getEvent(Number(result.lastInsertRowid))!;
   }
 
   listEvents(conversationId: string, options: { afterId?: number } = {}): StoredEvent[] {
@@ -320,14 +371,67 @@ export class WorkspaceStore {
     const rows = this.db
       .prepare("SELECT id, conversation_id, run_id, kind, payload, created_at FROM conversation_events WHERE conversation_id = ? AND id > ? ORDER BY id")
       .all(conversationId, afterId) as EventRow[];
-    return rows.map((row) => ({
-      id: row.id,
-      conversationId: row.conversation_id,
-      runId: row.run_id ?? undefined,
-      kind: row.kind,
-      event: JSON.parse(row.payload) as Record<string, unknown>,
-      createdAt: row.created_at,
-    }));
+    return rows.map(hydrateEvent);
+  }
+
+  addArtifact(input: ArtifactInput): StoredArtifact {
+    const id = randomUUID();
+    const artifactPath = path.resolve(input.path);
+    const previousPath = input.previousPath ? path.resolve(input.previousPath) : null;
+    const metadata = input.metadata ?? {};
+    const fileType = normalizeOptionalText(metadata.fileType, 60) ?? inferFileType(artifactPath);
+    const mimeType = normalizeOptionalText(metadata.mimeType, 120) ?? inferMimeType(artifactPath);
+    const sizeBytes = typeof metadata.sizeBytes === "number" && Number.isFinite(metadata.sizeBytes)
+      ? Math.max(0, Math.round(metadata.sizeBytes))
+      : null;
+    this.db
+      .prepare(`
+        INSERT INTO artifacts (
+          id, conversation_id, run_id, source_event_id, kind, path, previous_path, name,
+          file_type, mime_type, size_bytes, tool_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        id,
+        input.conversationId,
+        input.runId ?? null,
+        input.sourceEventId ?? null,
+        input.kind,
+        artifactPath,
+        previousPath,
+        path.basename(artifactPath),
+        fileType,
+        mimeType,
+        sizeBytes,
+        normalizeOptionalText(input.toolName, 80),
+      );
+    this.db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?").run(input.conversationId);
+    return this.getArtifact(id)!;
+  }
+
+  listArtifacts(conversationId: string): StoredArtifact[] {
+    const rows = this.db
+      .prepare(`
+        SELECT id, conversation_id, run_id, source_event_id, kind, path, previous_path, name,
+          file_type, mime_type, size_bytes, tool_name, created_at, updated_at
+        FROM artifacts
+        WHERE conversation_id = ?
+        ORDER BY updated_at DESC, rowid DESC
+      `)
+      .all(conversationId) as ArtifactRow[];
+    return rows.map(hydrateArtifact);
+  }
+
+  getArtifact(id: string): StoredArtifact | null {
+    const row = this.db
+      .prepare(`
+        SELECT id, conversation_id, run_id, source_event_id, kind, path, previous_path, name,
+          file_type, mime_type, size_bytes, tool_name, created_at, updated_at
+        FROM artifacts
+        WHERE id = ?
+      `)
+      .get(id) as ArtifactRow | undefined;
+    return row ? hydrateArtifact(row) : null;
   }
 
   setActiveConversation(workspace: string, conversationId: string | null) {
@@ -524,6 +628,13 @@ export class WorkspaceStore {
     };
   }
 
+  private getEvent(id: number): StoredEvent | null {
+    const row = this.db
+      .prepare("SELECT id, conversation_id, run_id, kind, payload, created_at FROM conversation_events WHERE id = ?")
+      .get(id) as EventRow | undefined;
+    return row ? hydrateEvent(row) : null;
+  }
+
   startTask(runId: string, conversationId: string) {
     this.db
       .prepare("INSERT OR REPLACE INTO tasks (run_id, conversation_id, status, started_at, completed_at, error) VALUES (?, ?, 'running', datetime('now'), NULL, NULL)")
@@ -558,6 +669,23 @@ type EventRow = {
   kind: string;
   payload: string;
   created_at: string;
+};
+
+type ArtifactRow = {
+  id: string;
+  conversation_id: string;
+  run_id: string | null;
+  source_event_id: number | null;
+  kind: ArtifactKind;
+  path: string;
+  previous_path: string | null;
+  name: string;
+  file_type: string;
+  mime_type: string;
+  size_bytes: number | null;
+  tool_name: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type WorkspaceMetadataRow = {
@@ -607,6 +735,67 @@ function normalizeProviderProfile(input: ProviderProfileInput): Required<Provide
 
 function isProviderType(value: string): value is ProviderType {
   return value === "claude" || value === "openai-compatible" || value === "ollama" || value === "mock";
+}
+
+function hydrateEvent(row: EventRow): StoredEvent {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    runId: row.run_id ?? undefined,
+    kind: row.kind,
+    event: JSON.parse(row.payload) as Record<string, unknown>,
+    createdAt: row.created_at,
+  };
+}
+
+function hydrateArtifact(row: ArtifactRow): StoredArtifact {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    runId: row.run_id,
+    sourceEventId: row.source_event_id,
+    kind: row.kind,
+    path: row.path,
+    previousPath: row.previous_path,
+    name: row.name,
+    fileType: row.file_type,
+    mimeType: row.mime_type,
+    sizeBytes: row.size_bytes,
+    toolName: row.tool_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function inferFileType(filePath: string) {
+  const extension = path.extname(filePath).replace(/^\./, "").toLowerCase();
+  return extension || "file";
+}
+
+function inferMimeType(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase();
+  const known: Record<string, string> = {
+    ".css": "text/css",
+    ".csv": "text/csv",
+    ".gif": "image/gif",
+    ".html": "text/html",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".md": "text/markdown",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".ts": "text/typescript",
+    ".tsx": "text/typescript",
+    ".txt": "text/plain",
+    ".webp": "image/webp",
+    ".xml": "application/xml",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+  };
+  return known[extension] ?? "application/octet-stream";
 }
 
 function normalizeOptionalText(value: string | null | undefined, maxLength: number) {

@@ -275,6 +275,108 @@ describe("local HTTP server", () => {
       setup: { requiredEnv: ["PLAYWRIGHT_BROWSERS_PATH"], missingEnv: [] },
     });
   });
+
+  it("serves session artifacts through HTTP", async () => {
+    const { handle, workspace, store } = await createTestServer();
+    await postJson(`${handle.url}/workspaces`, { folder: workspace });
+    const created = await postJson(`${handle.url}/sessions`, { workspace, title: "Artifacts" }) as {
+      conversation: { id: string };
+    };
+    const event = store.addEvent(created.conversation.id, {
+      kind: "tool_result",
+      runId: "artifact-run",
+      conversationId: created.conversation.id,
+      name: "write_file",
+    });
+    const artifact = store.addArtifact({
+      conversationId: created.conversation.id,
+      runId: "artifact-run",
+      sourceEventId: event.id,
+      kind: "created",
+      path: path.join(workspace, "report.md"),
+      toolName: "write_file",
+      metadata: { sizeBytes: 12, fileType: "md", mimeType: "text/markdown" },
+    });
+
+    const list = await getJson(`${handle.url}/sessions/${created.conversation.id}/artifacts`) as {
+      artifacts: Array<{ id: string; path: string; sizeBytes: number }>;
+    };
+    expect(list.artifacts).toMatchObject([
+      { id: artifact.id, path: path.join(workspace, "report.md"), sizeBytes: 12 },
+    ]);
+
+    const detail = await getJson(`${handle.url}/artifacts/${artifact.id}`) as {
+      artifact: { id: string; conversationId: string };
+    };
+    expect(detail.artifact).toMatchObject({ id: artifact.id, conversationId: created.conversation.id });
+
+    const attachedPath = path.join(workspace, "input.txt");
+    await writeFile(attachedPath, "attached input");
+    const attached = await postJson(`${handle.url}/sessions/${created.conversation.id}/artifacts`, {
+      path: attachedPath,
+    }) as {
+      artifact: { id: string; kind: string; path: string; sizeBytes: number; toolName: string };
+    };
+    expect(attached.artifact).toMatchObject({
+      kind: "attached",
+      path: attachedPath,
+      sizeBytes: 14,
+      toolName: "attach_file",
+    });
+
+    const replay = await getJson(`${handle.url}/sessions/${created.conversation.id}/events/replay`) as {
+      events: Array<{ kind: string; event: { kind: string; artifact?: { id: string } } }>;
+    };
+    expect(replay.events.map((event) => event.kind)).toContain("artifact_attached");
+    expect(replay.events.find((event) => event.kind === "artifact_attached")?.event.artifact?.id)
+      .toBe(attached.artifact.id);
+
+    const preview = await getJson(`${handle.url}/artifacts/${attached.artifact.id}/preview`) as {
+      artifact: { id: string };
+      preview: { kind: string; content?: string; truncated: boolean };
+    };
+    expect(preview.artifact.id).toBe(attached.artifact.id);
+    expect(preview.preview).toMatchObject({
+      kind: "text",
+      content: "attached input",
+      truncated: false,
+    });
+
+    const batchWrite = await postJson(`${handle.url}/sessions/${created.conversation.id}/files/write`, {
+      files: [
+        { path: "batch/a.txt", content: "alpha" },
+        { path: "batch/b.md", content: "# Bravo\n" },
+      ],
+    }) as {
+      files: Array<{ path: string; created: boolean; artifact: { id: string; kind: string } }>;
+    };
+    expect(batchWrite.files).toHaveLength(2);
+    expect(batchWrite.files[0]).toMatchObject({
+      path: path.join(workspace, "batch/a.txt"),
+      created: true,
+      artifact: { kind: "created" },
+    });
+
+    const batchRead = await postJson(`${handle.url}/sessions/${created.conversation.id}/files/read`, {
+      paths: ["batch/a.txt", "batch/b.md"],
+    }) as {
+      files: Array<{ path: string; content: string; truncated: boolean }>;
+    };
+    expect(batchRead.files).toMatchObject([
+      { path: path.join(workspace, "batch/a.txt"), content: "alpha", truncated: false },
+      { path: path.join(workspace, "batch/b.md"), content: "# Bravo\n", truncated: false },
+    ]);
+
+    const finalReplay = await getJson(`${handle.url}/sessions/${created.conversation.id}/events/replay`) as {
+      events: Array<{ kind: string; event: { kind: string; artifact?: { id: string } } }>;
+    };
+    expect(finalReplay.events.map((event) => event.kind)).toEqual(expect.arrayContaining([
+      "file_attached",
+      "artifact_created",
+      "file_created",
+      "file_read",
+    ]));
+  });
 });
 
 async function createTestServer() {
@@ -307,7 +409,7 @@ async function createTestServer() {
   });
   const handle = await createLocalServer(runtime);
   handles.push(handle);
-  return { handle, workspace, extensionsRoot, resourceRoot: directory };
+  return { handle, workspace, extensionsRoot, resourceRoot: directory, store };
 }
 
 async function writeManifest(filePath: string, manifest: Record<string, unknown>) {

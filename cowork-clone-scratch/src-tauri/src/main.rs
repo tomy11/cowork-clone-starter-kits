@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -272,6 +273,59 @@ async fn run(
     .await
 }
 
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    let target = validate_local_path(&path)?;
+    spawn_open_command(&target, false)
+}
+
+#[tauri::command]
+fn reveal_path(path: String) -> Result<(), String> {
+    let target = validate_local_path(&path)?;
+    spawn_open_command(&target, true)
+}
+
+fn validate_local_path(path: &str) -> Result<PathBuf, String> {
+    let target = PathBuf::from(path);
+    if !target.exists() {
+        return Err("Path does not exist".to_string());
+    }
+    Ok(target)
+}
+
+fn spawn_open_command(path: &Path, reveal: bool) -> Result<(), String> {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        if reveal {
+            command.arg("-R");
+        }
+        command.arg(path);
+        command
+    } else if cfg!(target_os = "windows") {
+        if reveal {
+            let mut command = Command::new("explorer");
+            command.arg(format!("/select,{}", path.display()));
+            command
+        } else {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "start", ""]);
+            command.arg(path);
+            command
+        }
+    } else {
+        let target = if reveal {
+            path.parent().unwrap_or(path)
+        } else {
+            path
+        };
+        let mut command = Command::new("xdg-open");
+        command.arg(target);
+        command
+    };
+    command.spawn().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -284,6 +338,8 @@ fn main() {
             list_skills,
             list_tools,
             run,
+            open_path,
+            reveal_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

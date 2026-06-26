@@ -1,4 +1,14 @@
 import { randomUUID } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import * as path from "node:path";
 import { Orchestrator, type OrchestratorEvent } from "./agent/orchestrator.js";
 import { ToolRegistry } from "./agent/tools/registry.js";
@@ -7,7 +17,7 @@ import { PermissionACL } from "./permissions/acl.js";
 import { AuditLog } from "./permissions/audit.js";
 import { ClaudeProvider } from "./llm/claude.js";
 import { OpenAICompatProvider } from "./llm/openai-compatible.js";
-import { SkillsLoader } from "./skills/loader.js";
+import { SkillsLoader, type Skill, type SkillMetadata } from "./skills/loader.js";
 import { ExtensionsLoader } from "./extensions/loader.js";
 import {
   WorkspaceStore,
@@ -15,6 +25,8 @@ import {
   type ProviderProfileSecret,
   type ProviderProfileUpdate,
   type ProviderType,
+  type ArtifactInput,
+  type StoredArtifact,
   type StoredConversation,
 } from "./storage/workspace-store.js";
 import { withWorkspaceContext } from "./workspace-context.js";
@@ -25,7 +37,21 @@ import { MockProvider } from "./llm/mock.js";
 export type RpcRequest = { id: string; method: string; params: Record<string, any> };
 export type RpcResponse = { id: string; result?: unknown; error?: { message: string; code?: number } };
 export type AppEvent = OrchestratorEvent | {
-  kind: "confirmation_requested" | "confirmation_resolved" | "run_started" | "run_cancelled" | "mcp_status";
+  kind:
+    | "artifact_created"
+    | "artifact_attached"
+    | "artifact_moved"
+    | "artifact_updated"
+    | "confirmation_requested"
+    | "confirmation_resolved"
+    | "file_attached"
+    | "file_created"
+    | "file_moved"
+    | "file_read"
+    | "file_updated"
+    | "run_started"
+    | "run_cancelled"
+    | "mcp_status";
   [key: string]: unknown;
 };
 
@@ -72,10 +98,52 @@ type ProviderModelsResult = {
   detail: string;
 };
 
+export type ArtifactPreview =
+  | {
+      kind: "text";
+      content: string;
+      truncated: boolean;
+      limitBytes: number;
+    }
+  | {
+      kind: "image";
+      dataUrl: string;
+      truncated: false;
+      limitBytes: number;
+    }
+  | {
+      kind: "binary" | "missing";
+      message: string;
+      truncated: false;
+      limitBytes: number;
+    };
+
+export type BatchFileRead = {
+  path: string;
+  name: string;
+  fileType: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  content: string;
+  truncated: boolean;
+  limitBytes: number;
+};
+
+export type BatchFileWrite = {
+  path: string;
+  name: string;
+  fileType: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  created: boolean;
+  artifact: StoredArtifact;
+};
+
 export class AppRuntime {
   private activeRuns = new Map<string, AbortController>();
   private pendingConfirmations = new Map<string, PendingConfirmation>();
   private sessionListeners = new Map<string, Set<SessionListener>>();
+  private pendingToolCalls = new Map<string, Array<{ name: string; args: unknown; existedBefore?: boolean }>>();
 
   constructor(private cfg: AppRuntimeConfig) {}
 
@@ -133,10 +201,10 @@ export class AppRuntime {
         }
 
         case "list_skills":
-          return { id: request.id, result: { skills: await this.cfg.skills.list() } };
+          return { id: request.id, result: { skills: await this.listSkills() } };
 
         case "load_skill":
-          return { id: request.id, result: { skill: await this.cfg.skills.load(String(request.params.name)) } };
+          return { id: request.id, result: { skill: await this.loadSkill(String(request.params.name)) } };
 
         case "list_extensions":
           return { id: request.id, result: { extensions: await this.cfg.extensions.list() } };
@@ -308,6 +376,196 @@ export class AppRuntime {
     return this.cfg.store.listEvents(conversationId, options);
   }
 
+  listArtifacts(conversationId: string) {
+    return this.cfg.store.listArtifacts(conversationId);
+  }
+
+  getArtifact(id: string) {
+    return this.cfg.store.getArtifact(id);
+  }
+
+  previewArtifact(id: string, options: { limitBytes?: number } = {}): { artifact: StoredArtifact; preview: ArtifactPreview } | null {
+    const artifact = this.cfg.store.getArtifact(id);
+    if (!artifact) return null;
+    const conversation = this.cfg.store.getConversation(artifact.conversationId);
+    if (!conversation) return null;
+    const target = path.resolve(artifact.path);
+    if (!pathIsInside(conversation.workspace, target)) {
+      throw new Error("Artifact path must be inside the session workspace");
+    }
+    const limitBytes = clampPreviewLimit(options.limitBytes ?? 64 * 1024);
+    if (!existsSync(target)) {
+      return {
+        artifact,
+        preview: {
+          kind: "missing",
+          message: "The file no longer exists on disk.",
+          truncated: false,
+          limitBytes,
+        },
+      };
+    }
+    const stats = statSync(target);
+    if (!stats.isFile()) {
+      return {
+        artifact,
+        preview: {
+          kind: "binary",
+          message: "Only regular files can be previewed.",
+          truncated: false,
+          limitBytes,
+        },
+      };
+    }
+    if (isTextPreview(artifact)) {
+      const content = readPreviewBytes(target, limitBytes).toString("utf-8");
+      return {
+        artifact,
+        preview: {
+          kind: "text",
+          content,
+          truncated: stats.size > limitBytes,
+          limitBytes,
+        },
+      };
+    }
+    if (isImagePreview(artifact) && stats.size <= limitBytes) {
+      const dataUrl = `data:${artifact.mimeType};base64,${readFileSync(target).toString("base64")}`;
+      return {
+        artifact,
+        preview: {
+          kind: "image",
+          dataUrl,
+          truncated: false,
+          limitBytes,
+        },
+      };
+    }
+    return {
+      artifact,
+      preview: {
+        kind: "binary",
+        message: "Preview is not available for this file type or size.",
+        truncated: false,
+        limitBytes,
+      },
+    };
+  }
+
+  attachArtifact(conversationId: string, filePath: string) {
+    const conversation = this.cfg.store.getConversation(conversationId);
+    if (!conversation) return null;
+    const target = path.resolve(filePath);
+    if (!pathIsInside(conversation.workspace, target)) {
+      throw new Error("Artifact path must be inside the session workspace");
+    }
+    if (!existsSync(target)) throw new Error("Artifact path does not exist");
+    const artifact = this.cfg.store.addArtifact({
+      conversationId,
+      kind: "attached",
+      path: target,
+      toolName: "attach_file",
+      metadata: fileMetadata(target),
+    });
+    const event: AppEvent = {
+      kind: "artifact_attached",
+      conversationId,
+      artifact,
+      sourceEventId: null,
+    };
+    this.cfg.store.addEvent(conversationId, event);
+    this.publishSessionEvent(conversationId, event);
+    this.recordSessionEvent(conversationId, fileEventKind("attached"), {
+      path: target,
+      artifactId: artifact.id,
+      sizeBytes: artifact.sizeBytes,
+      mimeType: artifact.mimeType,
+      fileType: artifact.fileType,
+    });
+    return artifact;
+  }
+
+  batchReadFiles(
+    conversationId: string,
+    files: Array<{ path: string; limitBytes?: number }>,
+  ): { files: BatchFileRead[] } | null {
+    const conversation = this.cfg.store.getConversation(conversationId);
+    if (!conversation) return null;
+    const result = files.map((file) => {
+      const target = this.resolveSessionFilePath(conversation, file.path);
+      if (!existsSync(target)) throw new Error(`File does not exist: ${target}`);
+      const stats = statSync(target);
+      if (!stats.isFile()) throw new Error(`Not a regular file: ${target}`);
+      const limitBytes = clampPreviewLimit(file.limitBytes ?? 64 * 1024);
+      const content = readPreviewBytes(target, limitBytes).toString("utf-8");
+      const output = {
+        path: target,
+        name: path.basename(target),
+        fileType: inferFileType(target),
+        mimeType: inferMimeType(target),
+        sizeBytes: stats.size,
+        content,
+        truncated: stats.size > limitBytes,
+        limitBytes,
+      };
+      this.recordSessionEvent(conversationId, "file_read", {
+        path: target,
+        sizeBytes: output.sizeBytes,
+        mimeType: output.mimeType,
+        fileType: output.fileType,
+        truncated: output.truncated,
+      });
+      return output;
+    });
+    return { files: result };
+  }
+
+  batchWriteFiles(
+    conversationId: string,
+    files: Array<{ path: string; content: string }>,
+  ): { files: BatchFileWrite[] } | null {
+    const conversation = this.cfg.store.getConversation(conversationId);
+    if (!conversation) return null;
+    const result = files.map((file) => {
+      const target = this.resolveSessionFilePath(conversation, file.path);
+      const created = !existsSync(target);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, file.content, "utf-8");
+      const artifact = this.cfg.store.addArtifact({
+        conversationId,
+        kind: created ? "created" : "updated",
+        path: target,
+        toolName: "batch_write",
+        metadata: fileMetadata(target),
+      });
+      const artifactEvent: AppEvent = {
+        kind: artifactEventKind(artifact.kind),
+        conversationId,
+        artifact,
+        sourceEventId: null,
+      };
+      this.cfg.store.addEvent(conversationId, artifactEvent);
+      this.publishSessionEvent(conversationId, artifactEvent);
+      this.recordSessionEvent(conversationId, fileEventKind(artifact.kind), {
+        path: target,
+        artifactId: artifact.id,
+        sizeBytes: artifact.sizeBytes,
+        mimeType: artifact.mimeType,
+        fileType: artifact.fileType,
+      });
+      return {
+        path: target,
+        name: artifact.name,
+        fileType: artifact.fileType,
+        mimeType: artifact.mimeType,
+        sizeBytes: artifact.sizeBytes,
+        created,
+        artifact,
+      };
+    });
+    return { files: result };
+  }
+
   listProviderProfiles() {
     return this.cfg.store.listProviderProfiles();
   }
@@ -318,6 +576,33 @@ export class AppRuntime {
 
   async getExtension(id: string) {
     return this.cfg.extensions.get(id);
+  }
+
+  async listSkills(): Promise<SkillMetadata[]> {
+    const baseSkills = await this.cfg.skills.list();
+    const knownNames = new Set(baseSkills.map((skill) => skill.name));
+    const extensionSkills: SkillMetadata[] = [];
+    for (const resource of await this.cfg.extensions.listReadySkillResources()) {
+      const metadata = await this.cfg.skills.metadataFromPath(resource.path, path.basename(resource.path));
+      if (!metadata || knownNames.has(metadata.name)) continue;
+      knownNames.add(metadata.name);
+      extensionSkills.push({
+        ...metadata,
+        raw: { ...metadata.raw, extensionId: resource.extensionId },
+      });
+    }
+    return [...baseSkills, ...extensionSkills];
+  }
+
+  async loadSkill(name: string): Promise<Skill> {
+    const baseSkills = await this.cfg.skills.list();
+    const baseSkill = baseSkills.find((skill) => skill.name === name);
+    if (baseSkill) return this.cfg.skills.loadFromPath(baseSkill.path, path.basename(baseSkill.path));
+    for (const resource of await this.cfg.extensions.listReadySkillResources()) {
+      const metadata = await this.cfg.skills.metadataFromPath(resource.path, path.basename(resource.path));
+      if (metadata?.name === name) return this.cfg.skills.loadFromPath(resource.path, path.basename(resource.path));
+    }
+    return this.cfg.skills.load(name);
   }
 
   createProviderProfile(input: ProviderProfileInput) {
@@ -468,9 +753,26 @@ export class AppRuntime {
     const emit = (event: AppEvent) => {
       const enriched = { ...event, runId, conversationId } as AppEvent;
       events.push(enriched);
-      this.cfg.store.addEvent(conversationId, enriched);
+      const storedEvent = this.cfg.store.addEvent(conversationId, enriched);
       onEvent?.(enriched);
       this.publishSessionEvent(conversationId, enriched);
+      const artifactEvent = this.recordArtifactFromEvent(conversationId, runId, enriched, storedEvent.id);
+      if (!artifactEvent) return;
+      events.push(artifactEvent);
+      this.cfg.store.addEvent(conversationId, artifactEvent);
+      onEvent?.(artifactEvent);
+      this.publishSessionEvent(conversationId, artifactEvent);
+      const artifact = (artifactEvent as AppEvent & { artifact: StoredArtifact }).artifact;
+      this.recordSessionEvent(conversationId, fileEventKind(artifact.kind), {
+        path: artifact.path,
+        previousPath: artifact.previousPath,
+        artifactId: artifact.id,
+        runId,
+        sourceEventId: storedEvent.id,
+        sizeBytes: artifact.sizeBytes,
+        mimeType: artifact.mimeType,
+        fileType: artifact.fileType,
+      });
     };
 
     emit({
@@ -486,12 +788,12 @@ export class AppRuntime {
     try {
       const mcpServers = await this.cfg.mcp.connectEnabled(workspace);
       emit({ kind: "mcp_status", servers: mcpServers });
-      const availableSkills = await this.cfg.skills.list();
+      const availableSkills = await this.listSkills();
       const contextualMessage = withWorkspaceContext(rawMessage, workspace);
       for await (const event of orchestrator.run(contextualMessage, history, {
         signal: controller.signal,
         availableSkills,
-        loadSkill: (name) => this.cfg.skills.load(name),
+        loadSkill: (name) => this.loadSkill(name),
         onEvent: emit,
         requestConfirmation: (confirmation) => {
           const confirmationId = randomUUID();
@@ -554,6 +856,69 @@ export class AppRuntime {
     const listeners = this.sessionListeners.get(conversationId);
     if (!listeners) return;
     for (const listener of listeners) listener(event);
+  }
+
+  private recordSessionEvent(conversationId: string, kind: AppEvent["kind"], payload: Record<string, unknown>) {
+    const event = { kind, conversationId, ...payload } as AppEvent;
+    this.cfg.store.addEvent(conversationId, event);
+    this.publishSessionEvent(conversationId, event);
+  }
+
+  private resolveSessionFilePath(conversation: StoredConversation, filePath: string) {
+    const target = path.resolve(conversation.workspace, filePath);
+    if (!pathIsInside(conversation.workspace, target)) {
+      throw new Error("File path must be inside the session workspace");
+    }
+    return target;
+  }
+
+  private recordArtifactFromEvent(
+    conversationId: string,
+    runId: string,
+    event: AppEvent,
+    sourceEventId: number,
+  ): AppEvent | null {
+    if (event.kind === "tool_call") {
+      const key = String(event.id ?? "agent");
+      const calls = this.pendingToolCalls.get(key) ?? [];
+      const args = event.args;
+      calls.push({
+        name: String(event.name ?? ""),
+        args,
+        existedBefore: isObject(args) && typeof args.path === "string"
+          ? existsSync(args.path)
+          : undefined,
+      });
+      this.pendingToolCalls.set(key, calls.slice(-20));
+      return null;
+    }
+    if (event.kind !== "tool_result") return null;
+    const key = String(event.id ?? "agent");
+    const calls = this.pendingToolCalls.get(key) ?? [];
+    const index = calls.findIndex((call) => call.name === event.name);
+    const [call] = index >= 0 ? calls.splice(index, 1) : [];
+    if (calls.length > 0) this.pendingToolCalls.set(key, calls);
+    else this.pendingToolCalls.delete(key);
+    if (!call || !isObject(call.args)) return null;
+
+    const artifactInput = artifactInputFromToolResult(
+      conversationId,
+      runId,
+      sourceEventId,
+      String(event.name),
+      call.args,
+      event.result,
+      call.existedBefore,
+    );
+    if (!artifactInput) return null;
+    const artifact = this.cfg.store.addArtifact(artifactInput);
+    return {
+      kind: artifactEventKind(artifact.kind),
+      runId,
+      conversationId,
+      artifact,
+      sourceEventId,
+    };
   }
 
   private createOrchestrator(llm: LLMProvider) {
@@ -704,6 +1069,171 @@ function profileMetadata(profile: ProviderProfileSecret, modelOverride?: string)
 
 function optionalString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function artifactInputFromToolResult(
+  conversationId: string,
+  runId: string,
+  sourceEventId: number,
+  toolName: string,
+  args: Record<string, unknown>,
+  result: unknown,
+  existedBefore?: boolean,
+): ArtifactInput | null {
+  const resultText = typeof result === "string" ? result : "";
+  if (toolName === "write_file" && resultText.startsWith("Wrote ")) {
+    const target = stringArg(args, "path");
+    if (!target) return null;
+    return {
+      conversationId,
+      runId,
+      sourceEventId,
+      kind: existedBefore ? "updated" : "created",
+      path: target,
+      toolName,
+      metadata: fileMetadata(target),
+    };
+  }
+  if (toolName === "move_file" && resultText.startsWith("Moved ")) {
+    const target = stringArg(args, "to");
+    const previousPath = stringArg(args, "from");
+    if (!target) return null;
+    return {
+      conversationId,
+      runId,
+      sourceEventId,
+      kind: "moved",
+      path: target,
+      previousPath,
+      toolName,
+      metadata: fileMetadata(target),
+    };
+  }
+  return null;
+}
+
+function fileMetadata(filePath: string): ArtifactInput["metadata"] {
+  try {
+    const stats = statSync(filePath);
+    return {
+      fileType: inferFileType(filePath),
+      mimeType: inferMimeType(filePath),
+      sizeBytes: stats.isFile() ? stats.size : null,
+    };
+  } catch {
+    return {
+      fileType: inferFileType(filePath),
+      mimeType: inferMimeType(filePath),
+      sizeBytes: null,
+    };
+  }
+}
+
+function artifactEventKind(
+  kind: ArtifactInput["kind"],
+): "artifact_created" | "artifact_updated" | "artifact_moved" | "artifact_attached" {
+  if (kind === "created") return "artifact_created";
+  if (kind === "updated") return "artifact_updated";
+  if (kind === "attached") return "artifact_attached";
+  return "artifact_moved";
+}
+
+function fileEventKind(kind: ArtifactInput["kind"]): "file_created" | "file_updated" | "file_moved" | "file_attached" {
+  if (kind === "created") return "file_created";
+  if (kind === "updated") return "file_updated";
+  if (kind === "attached") return "file_attached";
+  return "file_moved";
+}
+
+function stringArg(args: Record<string, unknown>, key: string) {
+  const value = args[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function inferFileType(filePath: string) {
+  const extension = path.extname(filePath).replace(/^\./, "").toLowerCase();
+  return extension || "file";
+}
+
+function inferMimeType(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase();
+  const known: Record<string, string> = {
+    ".css": "text/css",
+    ".csv": "text/csv",
+    ".gif": "image/gif",
+    ".html": "text/html",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".md": "text/markdown",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".ts": "text/typescript",
+    ".tsx": "text/typescript",
+    ".txt": "text/plain",
+    ".webp": "image/webp",
+    ".xml": "application/xml",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+  };
+  return known[extension] ?? "application/octet-stream";
+}
+
+function pathIsInside(parent: string, child: string) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function clampPreviewLimit(limitBytes: number) {
+  if (!Number.isFinite(limitBytes)) return 64 * 1024;
+  return Math.min(Math.max(Math.floor(limitBytes), 1024), 256 * 1024);
+}
+
+function readPreviewBytes(filePath: string, limitBytes: number) {
+  const fd = openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(limitBytes);
+    const bytesRead = readSync(fd, buffer, 0, limitBytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function isTextPreview(artifact: StoredArtifact) {
+  if (artifact.mimeType.startsWith("text/")) return true;
+  return [
+    "application/json",
+    "application/xml",
+    "application/yaml",
+    "image/svg+xml",
+  ].includes(artifact.mimeType)
+    || [
+      "css",
+      "csv",
+      "env",
+      "html",
+      "js",
+      "json",
+      "md",
+      "toml",
+      "ts",
+      "tsx",
+      "txt",
+      "xml",
+      "yaml",
+      "yml",
+    ].includes(artifact.fileType);
+}
+
+function isImagePreview(artifact: StoredArtifact) {
+  return ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(artifact.mimeType);
 }
 
 function validateProviderReadiness(

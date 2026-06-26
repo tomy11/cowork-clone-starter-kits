@@ -404,6 +404,108 @@ button { color: inherit; }
 .task-activity { margin: 0 0 30px; padding: 14px; background: #fafafa; border: 1px solid #ececea; border-radius: 14px; }
 .task-activity-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; color: #777; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 .task-activity-heading small { color: #aaa; font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.artifact-panel-actions { display: inline-flex; align-items: center; gap: 8px; }
+.artifact-panel-actions button { display: grid; place-items: center; width: 26px; height: 26px; color: #555; background: #fff; border: 1px solid #e3e3df; border-radius: 7px; cursor: pointer; }
+.artifact-panel-actions button:hover { color: #222; background: #f5f5f2; border-color: #d2d2cc; }
+.artifact-panel {
+  margin: 0 0 30px;
+  padding: 14px;
+  background: #fbfbfa;
+  border: 1px solid #ececea;
+  border-radius: 14px;
+}
+
+.artifact-list {
+  display: grid;
+  gap: 4px;
+}
+
+.artifact-empty {
+  display: grid;
+  place-items: center;
+  min-height: 42px;
+  color: #9a9a94;
+  font-size: 12px;
+  border-top: 1px solid #eeeeec;
+}
+
+.artifact-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 6px 4px;
+  border-top: 1px solid #eeeeec;
+}
+
+.artifact-row--selected { background: #f5f8ff; border-radius: 8px; }
+.artifact-row:first-child { border-top: 0; }
+.artifact-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: #555;
+  background: #fff;
+  border: 1px solid #e6e6e4;
+  border-radius: 7px;
+}
+
+.artifact-row > div:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.artifact-row strong,
+.artifact-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-row strong { font-size: 12px; font-weight: 500; }
+.artifact-row span { color: #8d8d8d; font-size: 10px; }
+.artifact-row small { color: #999; font-size: 10px; text-transform: uppercase; }
+.artifact-row-actions { display: inline-flex; align-items: center; gap: 4px; }
+.artifact-row-actions button { display: grid; place-items: center; width: 24px; height: 24px; color: #696966; background: transparent; border: 1px solid transparent; border-radius: 7px; cursor: pointer; }
+.artifact-row-actions button:hover { color: #222; background: #fff; border-color: #deded8; }
+.artifact-row-actions button:disabled { opacity: .45; cursor: wait; }
+.artifact-preview {
+  margin: -18px 0 30px;
+  padding: 14px;
+  background: #fff;
+  border: 1px solid #e8e8e3;
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .04);
+}
+
+.artifact-preview-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.artifact-preview-heading > div { display: grid; min-width: 0; gap: 3px; }
+.artifact-preview-heading strong { overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-preview-heading span { overflow: hidden; color: #8b8b86; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-preview-heading button { display: grid; place-items: center; flex: 0 0 24px; width: 24px; height: 24px; color: #777; background: #fafafa; border: 1px solid #e8e8e3; border-radius: 7px; cursor: pointer; }
+.artifact-preview-heading button:hover { color: #222; background: #f3f3ef; }
+.artifact-preview pre {
+  max-height: 280px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  color: #333;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f8f8f5;
+  border: 1px solid #eeeeea;
+  border-radius: 10px;
+}
+
+.artifact-preview img { display: block; max-width: 100%; max-height: 340px; margin: 0 auto; object-fit: contain; border-radius: 10px; }
+.artifact-preview p,
+.artifact-preview small { color: #8b8b86; font-size: 12px; }
 .agent-progress-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 4px; border-top: 1px solid #eeeeec; }
 .agent-progress-row:first-of-type { border-top: 0; }
 .agent-progress-row > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }

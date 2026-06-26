@@ -63,6 +63,64 @@ export type SessionEvent = {
   event: AgentEvent;
   createdAt: string;
 };
+export type ArtifactSummary = {
+  id: string;
+  conversationId: string;
+  runId: string | null;
+  sourceEventId: number | null;
+  kind: "created" | "updated" | "moved" | "attached";
+  path: string;
+  previousPath: string | null;
+  name: string;
+  fileType: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  toolName: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+export type ArtifactPreview =
+  | {
+      kind: "text";
+      content: string;
+      truncated: boolean;
+      limitBytes: number;
+    }
+  | {
+      kind: "image";
+      dataUrl: string;
+      truncated: false;
+      limitBytes: number;
+    }
+  | {
+      kind: "binary" | "missing";
+      message: string;
+      truncated: false;
+      limitBytes: number;
+    };
+export type ArtifactPreviewResult = {
+  artifact: ArtifactSummary;
+  preview: ArtifactPreview;
+};
+export type BatchFileRead = {
+  path: string;
+  name: string;
+  fileType: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  content: string;
+  truncated: boolean;
+  limitBytes: number;
+};
+export type BatchFileWrite = {
+  path: string;
+  name: string;
+  fileType: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  created: boolean;
+  artifact: ArtifactSummary;
+};
 export type WorkspaceMetadata = {
   path: string;
   name: string;
@@ -250,6 +308,50 @@ export class LocalApiClient {
     return result.events;
   }
 
+  async listArtifacts(sessionId: string) {
+    const result = await this.get<{ artifacts: ArtifactSummary[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/artifacts`,
+    );
+    return result.artifacts;
+  }
+
+  async attachArtifact(sessionId: string, path: string) {
+    const result = await this.post<{ artifact: ArtifactSummary }>(
+      `/sessions/${encodeURIComponent(sessionId)}/artifacts`,
+      { path },
+    );
+    return result.artifact;
+  }
+
+  async getArtifact(artifactId: string) {
+    const result = await this.get<{ artifact: ArtifactSummary }>(`/artifacts/${encodeURIComponent(artifactId)}`);
+    return result.artifact;
+  }
+
+  async previewArtifact(artifactId: string, options: { limitBytes?: number } = {}) {
+    const params = new URLSearchParams();
+    if (options.limitBytes) params.set("limitBytes", String(options.limitBytes));
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return this.get<ArtifactPreviewResult>(`/artifacts/${encodeURIComponent(artifactId)}/preview${query}`);
+  }
+
+  async readFiles(sessionId: string, files: Array<string | { path: string; limitBytes?: number }>) {
+    const input = files.map((file) => typeof file === "string" ? { path: file } : file);
+    const result = await this.post<{ files: BatchFileRead[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/files/read`,
+      { files: input },
+    );
+    return result.files;
+  }
+
+  async writeFiles(sessionId: string, files: Array<{ path: string; content: string }>) {
+    const result = await this.post<{ files: BatchFileWrite[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/files/write`,
+      { files },
+    );
+    return result.files;
+  }
+
   openSessionEvents(sessionId: string, onEvent: (event: AgentEvent) => void) {
     const source = new EventSource(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}/events`);
     source.onmessage = (message) => onEvent(JSON.parse(message.data) as AgentEvent);
@@ -266,6 +368,15 @@ export class LocalApiClient {
       "tool_result",
       "confirmation_requested",
       "confirmation_resolved",
+      "file_attached",
+      "file_created",
+      "file_moved",
+      "file_read",
+      "file_updated",
+      "artifact_created",
+      "artifact_attached",
+      "artifact_updated",
+      "artifact_moved",
       "run_cancelled",
       "final",
       "error",

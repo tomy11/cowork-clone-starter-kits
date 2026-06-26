@@ -263,6 +263,63 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
       return;
     }
 
+    const artifactsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/artifacts$/);
+    if (request.method === "POST" && artifactsMatch) {
+      const conversationId = decodeURIComponent(artifactsMatch[1]);
+      if (!runtime.getConversation(conversationId)) return writeJson(response, 404, { error: "session not found" });
+      const body = await readJson(request);
+      const filePath = stringField(body, "path") ?? stringField(body, "filePath");
+      if (!filePath) return writeJson(response, 400, { error: "path is required" });
+      let artifact;
+      try {
+        artifact = runtime.attachArtifact(conversationId, filePath);
+      } catch (error) {
+        return writeJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      if (!artifact) return writeJson(response, 404, { error: "session not found" });
+      writeJson(response, 201, { artifact });
+      return;
+    }
+
+    if (request.method === "GET" && artifactsMatch) {
+      const conversationId = decodeURIComponent(artifactsMatch[1]);
+      if (!runtime.getConversation(conversationId)) return writeJson(response, 404, { error: "session not found" });
+      writeJson(response, 200, { artifacts: runtime.listArtifacts(conversationId) });
+      return;
+    }
+
+    const fileReadMatch = url.pathname.match(/^\/sessions\/([^/]+)\/files\/read$/);
+    if (request.method === "POST" && fileReadMatch) {
+      const conversationId = decodeURIComponent(fileReadMatch[1]);
+      if (!runtime.getConversation(conversationId)) return writeJson(response, 404, { error: "session not found" });
+      const body = await readJson(request);
+      let result;
+      try {
+        result = runtime.batchReadFiles(conversationId, batchReadInput(body));
+      } catch (error) {
+        return writeJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      if (!result) return writeJson(response, 404, { error: "session not found" });
+      writeJson(response, 200, result);
+      return;
+    }
+
+    const fileWriteMatch = url.pathname.match(/^\/sessions\/([^/]+)\/files\/write$/);
+    if (request.method === "POST" && fileWriteMatch) {
+      const conversationId = decodeURIComponent(fileWriteMatch[1]);
+      if (!runtime.getConversation(conversationId)) return writeJson(response, 404, { error: "session not found" });
+      const body = await readJson(request);
+      let result;
+      try {
+        result = runtime.batchWriteFiles(conversationId, batchWriteInput(body));
+      } catch (error) {
+        return writeJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      if (!result) return writeJson(response, 404, { error: "session not found" });
+      writeJson(response, 200, result);
+      return;
+    }
+
     const eventsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/events$/);
     if (request.method === "GET" && eventsMatch) {
       const conversationId = decodeURIComponent(eventsMatch[1]);
@@ -323,6 +380,30 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
         params: { runId: decodeURIComponent(cancelRunMatch[1]) },
       });
       writeRpc(response, result, 200);
+      return;
+    }
+
+    const artifactPreviewMatch = url.pathname.match(/^\/artifacts\/([^/]+)\/preview$/);
+    if (request.method === "GET" && artifactPreviewMatch) {
+      const limit = Number(url.searchParams.get("limitBytes") ?? 0);
+      let preview;
+      try {
+        preview = runtime.previewArtifact(decodeURIComponent(artifactPreviewMatch[1]), {
+          limitBytes: limit || undefined,
+        });
+      } catch (error) {
+        return writeJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      if (!preview) return writeJson(response, 404, { error: "artifact not found" });
+      writeJson(response, 200, preview);
+      return;
+    }
+
+    const artifactMatch = url.pathname.match(/^\/artifacts\/([^/]+)$/);
+    if (request.method === "GET" && artifactMatch) {
+      const artifact = runtime.getArtifact(decodeURIComponent(artifactMatch[1]));
+      if (!artifact) return writeJson(response, 404, { error: "artifact not found" });
+      writeJson(response, 200, { artifact });
       return;
     }
 
@@ -398,6 +479,35 @@ function providerProfileInput(body: JsonObject, partial = false) {
     if (typeof value === "boolean") profile[key] = value;
   }
   return profile;
+}
+
+function batchReadInput(body: JsonObject) {
+  const files = Array.isArray(body.files)
+    ? body.files
+    : Array.isArray(body.paths)
+      ? body.paths.map((entry) => ({ path: entry }))
+      : [];
+  if (files.length === 0) throw new Error("files or paths are required");
+  return files.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("Each file must be an object");
+    const file = entry as JsonObject;
+    const filePath = stringField(file, "path") ?? stringField(file, "filePath");
+    if (!filePath) throw new Error("Each file requires a path");
+    const limitBytes = typeof file.limitBytes === "number" ? file.limitBytes : undefined;
+    return { path: filePath, limitBytes };
+  });
+}
+
+function batchWriteInput(body: JsonObject) {
+  if (!Array.isArray(body.files) || body.files.length === 0) throw new Error("files are required");
+  return body.files.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("Each file must be an object");
+    const file = entry as JsonObject;
+    const filePath = stringField(file, "path") ?? stringField(file, "filePath");
+    if (!filePath) throw new Error("Each file requires a path");
+    if (typeof file.content !== "string") throw new Error("Each file requires string content");
+    return { path: filePath, content: file.content };
+  });
 }
 
 function requestId() {

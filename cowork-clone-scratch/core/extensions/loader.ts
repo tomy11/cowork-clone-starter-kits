@@ -38,6 +38,12 @@ export type ExtensionChecks = {
   resources: ExtensionResourceCheck[];
 };
 
+export type ExtensionSkillResource = {
+  extensionId: string;
+  name: string;
+  path: string;
+};
+
 export type ExtensionManifest = {
   id: string;
   name: string;
@@ -78,6 +84,20 @@ export class ExtensionsLoader {
   async get(id: string): Promise<ExtensionManifest | null> {
     const manifests = await this.list();
     return manifests.find((manifest) => manifest.id === id) ?? null;
+  }
+
+  async listReadySkillResources(): Promise<ExtensionSkillResource[]> {
+    const manifests = await this.list();
+    const resources: ExtensionSkillResource[] = [];
+    for (const manifest of manifests) {
+      if (manifest.status !== "ready") continue;
+      for (const check of manifest.checks.resources) {
+        if (check.type === "skill" && check.ok && check.path) {
+          resources.push({ extensionId: manifest.id, name: check.name, path: check.path });
+        }
+      }
+    }
+    return resources;
   }
 
   private async discoverManifestPaths(): Promise<string[]> {
