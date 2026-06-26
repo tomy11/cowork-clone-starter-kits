@@ -92,15 +92,18 @@ export function Chat({ folder, sessionId, resumeLatest, localApi, onSessionCreat
     const loader = sessionId
       ? localApi.getSession(sessionId)
       : resumeLatest
-        ? localApi.latestSession(folder)
+        ? localApi.activeSession(folder)
         : Promise.resolve(null);
 
     loader
-      .then((session) => {
+      .then(async (session) => {
         if (disposed) return;
         if (session) {
+          const replayed = await localApi.listSessionEvents(session.id);
+          if (disposed) return;
           setConversationId(session.id);
           setMessages(session.messages);
+          replayEvents(replayed.map((entry) => entry.event));
         }
       })
       .catch((error) => {
@@ -172,6 +175,21 @@ export function Chat({ folder, sessionId, resumeLatest, localApi, onSessionCreat
       }
     } else if (event.kind === "confirmation_resolved") {
       setConfirmation(null);
+    }
+  }
+
+  function replayEvents(replayed: AgentEvent[]) {
+    setEvents(replayed);
+    setConfirmation(null);
+    for (const event of replayed) {
+      applyAgentEvent(event);
+      if (event.kind === "confirmation_requested") {
+        if (typeof event.confirmationId === "string" && typeof event.prompt === "string") {
+          setConfirmation({ id: event.confirmationId, prompt: event.prompt });
+        }
+      } else if (event.kind === "confirmation_resolved") {
+        setConfirmation(null);
+      }
     }
   }
 

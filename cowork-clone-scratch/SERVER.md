@@ -24,12 +24,16 @@ The Tauri shell now sets `COWORK_HTTP_PORT` automatically when it spawns the sid
 
 - `GET /health`
 - `GET /workspaces`
+- `GET /workspaces/metadata`
 - `POST /workspaces`
+- `GET /active-session?workspace=/path/to/workspace`
+- `PATCH /active-session`
 - `GET /sessions?workspace=/path/to/workspace`
 - `POST /sessions`
 - `GET /sessions/:id`
 - `PATCH /sessions/:id`
 - `DELETE /sessions/:id`
+- `GET /sessions/:id/events/replay`
 - `GET /sessions/:id/events`
 - `POST /sessions/:id/messages`
 - `GET /approvals`
@@ -75,5 +79,7 @@ curl -X POST http://127.0.0.1:8787/sessions/<session-id>/messages \
 - HTTP and JSON-RPC both call the same `AppRuntime`.
 - The React app now uses HTTP for workspace/session bootstrap and task messages, and SSE for live session events.
 - Session list, rename, archive, and delete are available through the local HTTP API.
+- Active session restore and event replay are persisted in SQLite and exposed through the local HTTP API.
+- Workspace metadata includes display name, active session, session counts, and timestamps.
 - Approvals are runtime-owned and can be answered through either JSON-RPC or HTTP.
 - The current server is local-first and unauthenticated. Add tokens before exposing it outside localhost.

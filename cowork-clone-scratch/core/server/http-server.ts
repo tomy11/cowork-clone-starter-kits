@@ -64,6 +64,29 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/workspaces/metadata") {
+      writeJson(response, 200, { workspaces: runtime.listWorkspaceMetadata() });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/active-session") {
+      const workspace = url.searchParams.get("workspace");
+      if (!workspace) return writeJson(response, 400, { error: "workspace is required" });
+      writeJson(response, 200, { session: runtime.getActiveConversation(workspace) });
+      return;
+    }
+
+    if (request.method === "PATCH" && url.pathname === "/active-session") {
+      const body = await readJson(request);
+      const workspace = stringField(body, "workspace");
+      if (!workspace) return writeJson(response, 400, { error: "workspace is required" });
+      const conversationId = stringField(body, "sessionId") ?? stringField(body, "conversationId") ?? null;
+      const ok = runtime.setActiveConversation(workspace, conversationId);
+      if (!ok) return writeJson(response, 404, { error: "session not found" });
+      writeJson(response, 200, { ok: true });
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/workspaces") {
       const body = await readJson(request);
       const folder = stringField(body, "folder") ?? stringField(body, "path");
@@ -137,6 +160,17 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
         params: { conversationId: decodeURIComponent(sessionMatch[1]) },
       });
       writeRpc(response, result, 200);
+      return;
+    }
+
+    const replayMatch = url.pathname.match(/^\/sessions\/([^/]+)\/events\/replay$/);
+    if (request.method === "GET" && replayMatch) {
+      const conversationId = decodeURIComponent(replayMatch[1]);
+      if (!runtime.getConversation(conversationId)) return writeJson(response, 404, { error: "session not found" });
+      const afterId = Number(url.searchParams.get("after") ?? 0);
+      writeJson(response, 200, {
+        events: runtime.listConversationEvents(conversationId, { afterId }),
+      });
       return;
     }
 

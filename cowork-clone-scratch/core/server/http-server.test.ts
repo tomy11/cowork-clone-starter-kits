@@ -42,6 +42,18 @@ describe("local HTTP server", () => {
       sessions: Array<{ id: string }>;
     };
     expect(sessions.sessions.map((session) => session.id)).toEqual([created.conversation.id]);
+
+    const metadata = await getJson(`${handle.url}/workspaces/metadata`) as {
+      workspaces: Array<{ path: string; name: string; activeConversationId: string | null; sessionCount: number }>;
+    };
+    expect(metadata.workspaces).toMatchObject([
+      {
+        path: workspace,
+        name: path.basename(workspace),
+        activeConversationId: created.conversation.id,
+        sessionCount: 1,
+      },
+    ]);
   });
 
   it("streams session events over SSE while posting a message", async () => {
@@ -68,6 +80,12 @@ describe("local HTTP server", () => {
 
     expect(events.map((event) => event.event)).toContain("run_started");
     expect(events.map((event) => event.event)).toContain("final");
+
+    const replay = await getJson(`${handle.url}/sessions/${created.conversation.id}/events/replay`) as {
+      events: Array<{ kind: string; event: { kind: string } }>;
+    };
+    expect(replay.events.map((event) => event.kind)).toContain("run_started");
+    expect(replay.events.map((event) => event.event.kind)).toContain("final");
   });
 
   it("exposes run cancellation through HTTP", async () => {
@@ -113,6 +131,34 @@ describe("local HTTP server", () => {
       sessions: Array<{ id: string }>;
     };
     expect(afterDelete.sessions).toEqual([]);
+  });
+
+  it("restores the active session for a workspace", async () => {
+    const { handle, workspace } = await createTestServer();
+    await postJson(`${handle.url}/workspaces`, { folder: workspace });
+    const first = await postJson(`${handle.url}/sessions`, { workspace, title: "First" }) as {
+      conversation: { id: string };
+    };
+    const second = await postJson(`${handle.url}/sessions`, { workspace, title: "Second" }) as {
+      conversation: { id: string };
+    };
+
+    const initial = await getJson(`${handle.url}/active-session?workspace=${encodeURIComponent(workspace)}`) as {
+      session: { id: string };
+    };
+    expect(initial.session.id).toBe(second.conversation.id);
+
+    await patchJson(`${handle.url}/active-session`, { workspace, sessionId: first.conversation.id });
+    const restored = await getJson(`${handle.url}/active-session?workspace=${encodeURIComponent(workspace)}`) as {
+      session: { id: string };
+    };
+    expect(restored.session.id).toBe(first.conversation.id);
+
+    await patchJson(`${handle.url}/sessions/${first.conversation.id}`, { archived: true });
+    const fallback = await getJson(`${handle.url}/active-session?workspace=${encodeURIComponent(workspace)}`) as {
+      session: { id: string };
+    };
+    expect(fallback.session.id).toBe(second.conversation.id);
   });
 });
 

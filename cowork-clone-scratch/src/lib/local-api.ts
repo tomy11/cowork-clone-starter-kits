@@ -10,6 +10,23 @@ export type SessionSummary = {
   updatedAt: string;
 };
 export type AgentEvent = { kind: string; runId?: string; conversationId?: string; [key: string]: unknown };
+export type SessionEvent = {
+  id: number;
+  conversationId: string;
+  runId?: string;
+  kind: string;
+  event: AgentEvent;
+  createdAt: string;
+};
+export type WorkspaceMetadata = {
+  path: string;
+  name: string;
+  activeConversationId: string | null;
+  sessionCount: number;
+  archivedSessionCount: number;
+  grantedAt: string;
+  updatedAt: string | null;
+};
 export type RunResult = {
   events: AgentEvent[];
   runId: string;
@@ -45,6 +62,11 @@ export class LocalApiClient {
     return result.workspaces;
   }
 
+  async listWorkspaceMetadata() {
+    const result = await this.get<{ workspaces: WorkspaceMetadata[] }>("/workspaces/metadata");
+    return result.workspaces;
+  }
+
   async grantWorkspace(folder: string) {
     await this.post<{ ok: boolean }>("/workspaces", { folder });
   }
@@ -61,6 +83,16 @@ export class LocalApiClient {
   async latestSession(workspace: string) {
     const sessions = await this.listSessions(workspace);
     return sessions[0] ?? null;
+  }
+
+  async activeSession(workspace: string) {
+    const params = new URLSearchParams({ workspace });
+    const result = await this.get<{ session: SessionSummary | null }>(`/active-session?${params.toString()}`);
+    return result.session;
+  }
+
+  async setActiveSession(workspace: string, sessionId: string | null) {
+    await this.patch<{ ok: boolean }>("/active-session", { workspace, sessionId });
   }
 
   async getSession(sessionId: string) {
@@ -89,6 +121,16 @@ export class LocalApiClient {
 
   async sendMessage(sessionId: string, input: { message: string; workspace: string; runId: string }) {
     return this.post<RunResult>(`/sessions/${encodeURIComponent(sessionId)}/messages`, input);
+  }
+
+  async listSessionEvents(sessionId: string, options: { afterId?: number } = {}) {
+    const params = new URLSearchParams();
+    if (options.afterId) params.set("after", String(options.afterId));
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    const result = await this.get<{ events: SessionEvent[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/events/replay${query}`,
+    );
+    return result.events;
   }
 
   openSessionEvents(sessionId: string, onEvent: (event: AgentEvent) => void) {

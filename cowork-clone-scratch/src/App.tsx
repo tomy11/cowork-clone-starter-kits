@@ -55,18 +55,24 @@ export default function App() {
 
   async function refreshSessions(folder = selectedFolder) {
     if (!localApi || !folder) return;
-    const nextSessions = await localApi.listSessions(folder);
+    const [nextSessions, activeSession] = await Promise.all([
+      localApi.listSessions(folder),
+      localApi.activeSession(folder),
+    ]);
     setSessions(nextSessions);
     setSelectedSessionId((current) =>
       current && nextSessions.some((session) => session.id === current)
         ? current
-        : nextSessions[0]?.id ?? null,
+        : activeSession && nextSessions.some((session) => session.id === activeSession.id)
+          ? activeSession.id
+          : nextSessions[0]?.id ?? null,
     );
   }
 
   function startNewTask() {
     setResumeLatest(false);
     setSelectedSessionId(null);
+    if (localApi && selectedFolder) void localApi.setActiveSession(selectedFolder, null);
     setChatKey((key) => key + 1);
   }
 
@@ -78,6 +84,7 @@ export default function App() {
 
   function selectSession(sessionId: string | null) {
     setSelectedSessionId(sessionId);
+    if (localApi && selectedFolder) void localApi.setActiveSession(selectedFolder, sessionId);
     setResumeLatest(false);
     setChatKey((key) => key + 1);
   }
@@ -132,6 +139,7 @@ export default function App() {
           localApi={localApi}
           onSessionCreated={(session) => {
             setSelectedSessionId(session.id);
+            void localApi?.setActiveSession(session.workspace, session.id);
             void refreshSessions(session.workspace);
           }}
         />

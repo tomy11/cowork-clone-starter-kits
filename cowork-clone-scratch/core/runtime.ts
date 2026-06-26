@@ -97,6 +97,21 @@ export class AppRuntime {
           return { id: request.id, result: { conversation: this.cfg.store.getConversation(conversationId) } };
         }
 
+        case "active_conversation": {
+          const workspace = String(request.params.workspace ?? "");
+          if (!workspace) return { id: request.id, error: { message: "Workspace is required", code: 400 } };
+          return { id: request.id, result: { conversation: this.cfg.store.getActiveConversation(workspace) } };
+        }
+
+        case "set_active_conversation": {
+          const workspace = String(request.params.workspace ?? "");
+          if (!workspace) return { id: request.id, error: { message: "Workspace is required", code: 400 } };
+          const conversationId = request.params.conversationId ? String(request.params.conversationId) : null;
+          const ok = this.cfg.store.setActiveConversation(workspace, conversationId);
+          if (!ok) return { id: request.id, error: { message: "Conversation not found", code: 404 } };
+          return { id: request.id, result: { ok: true } };
+        }
+
         case "list_skills":
           return { id: request.id, result: { skills: await this.cfg.skills.list() } };
 
@@ -129,6 +144,16 @@ export class AppRuntime {
           return {
             id: request.id,
             result: { conversation: this.cfg.store.getConversation(String(request.params.conversationId)) },
+          };
+
+        case "list_conversation_events":
+          return {
+            id: request.id,
+            result: {
+              events: this.cfg.store.listEvents(String(request.params.conversationId), {
+                afterId: Number(request.params.afterId ?? 0),
+              }),
+            },
           };
 
         case "rename_conversation": {
@@ -188,12 +213,28 @@ export class AppRuntime {
     return this.cfg.store.listWorkspaces();
   }
 
+  listWorkspaceMetadata() {
+    return this.cfg.store.listWorkspaceMetadata();
+  }
+
   listConversations(workspace?: unknown, options: { includeArchived?: boolean } = {}): StoredConversation[] {
     return this.cfg.store.listConversations(workspace, options);
   }
 
   getConversation(id: string): StoredConversation | null {
     return this.cfg.store.getConversation(id);
+  }
+
+  getActiveConversation(workspace: string): StoredConversation | null {
+    return this.cfg.store.getActiveConversation(workspace);
+  }
+
+  setActiveConversation(workspace: string, conversationId: string | null): boolean {
+    return this.cfg.store.setActiveConversation(workspace, conversationId);
+  }
+
+  listConversationEvents(conversationId: string, options: { afterId?: number } = {}) {
+    return this.cfg.store.listEvents(conversationId, options);
   }
 
   listApprovals(): PendingApproval[] {
@@ -258,6 +299,7 @@ export class AppRuntime {
     const history = existing?.messages ?? (Array.isArray(request.params.history) ? request.params.history : []);
     const rawMessage = String(request.params.message ?? "");
     const conversationId = this.cfg.store.ensureConversation(workspace, rawMessage, requestedConversationId);
+    this.cfg.store.setActiveConversation(workspace, conversationId);
     this.cfg.store.addMessage(conversationId, "user", rawMessage);
     this.cfg.store.startTask(runId, conversationId);
 
@@ -268,6 +310,7 @@ export class AppRuntime {
     const emit = (event: AppEvent) => {
       const enriched = { ...event, runId, conversationId } as AppEvent;
       events.push(enriched);
+      this.cfg.store.addEvent(conversationId, enriched);
       onEvent?.(enriched);
       this.publishSessionEvent(conversationId, enriched);
     };

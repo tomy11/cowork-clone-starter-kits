@@ -14,6 +14,25 @@ export type StoredConversation = {
   updatedAt: string;
 };
 
+export type StoredEvent = {
+  id: number;
+  conversationId: string;
+  runId?: string;
+  kind: string;
+  event: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type StoredWorkspaceMetadata = {
+  path: string;
+  name: string;
+  activeConversationId: string | null;
+  sessionCount: number;
+  archivedSessionCount: number;
+  grantedAt: string;
+  updatedAt: string | null;
+};
+
 export class WorkspaceStore {
   private db: Database.Database;
 
@@ -55,8 +74,23 @@ export class WorkspaceStore {
         started_at TEXT NOT NULL DEFAULT (datetime('now')),
         completed_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS conversation_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        run_id TEXT,
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS workspace_state (
+        workspace TEXT PRIMARY KEY,
+        active_conversation_id TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
       CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations(workspace, updated_at);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id);
+      CREATE INDEX IF NOT EXISTS idx_events_conversation ON conversation_events(conversation_id, id);
     `);
     this.ensureColumn("conversations", "archived", "INTEGER NOT NULL DEFAULT 0");
   }
@@ -77,6 +111,34 @@ export class WorkspaceStore {
     return rows.map((row) => row.path);
   }
 
+  listWorkspaceMetadata(): StoredWorkspaceMetadata[] {
+    const rows = this.db
+      .prepare(`
+        SELECT
+          workspaces.path,
+          workspaces.granted_at,
+          workspace_state.active_conversation_id,
+          MAX(conversations.updated_at) AS updated_at,
+          COUNT(conversations.id) AS session_count,
+          COALESCE(SUM(CASE WHEN conversations.archived = 1 THEN 1 ELSE 0 END), 0) AS archived_session_count
+        FROM workspaces
+        LEFT JOIN conversations ON conversations.workspace = workspaces.path
+        LEFT JOIN workspace_state ON workspace_state.workspace = workspaces.path
+        GROUP BY workspaces.path, workspaces.granted_at, workspace_state.active_conversation_id
+        ORDER BY workspaces.granted_at
+      `)
+      .all() as WorkspaceMetadataRow[];
+    return rows.map((row) => ({
+      path: row.path,
+      name: path.basename(row.path) || row.path,
+      activeConversationId: row.active_conversation_id,
+      sessionCount: row.session_count,
+      archivedSessionCount: row.archived_session_count,
+      grantedAt: row.granted_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
   ensureConversation(workspace: string, title: string, conversationId?: string): string {
     if (conversationId) {
       const existing = this.db.prepare("SELECT id FROM conversations WHERE id = ?").get(conversationId);
@@ -87,6 +149,7 @@ export class WorkspaceStore {
     this.db
       .prepare("INSERT INTO conversations (id, workspace, title) VALUES (?, ?, ?)")
       .run(id, path.resolve(workspace), title.slice(0, 120) || "New task");
+    this.setActiveConversation(workspace, id);
     return id;
   }
 
@@ -139,19 +202,84 @@ export class WorkspaceStore {
   }
 
   archiveConversation(id: string, archived: boolean): StoredConversation | null {
-    const result = this.db
-      .prepare("UPDATE conversations SET archived = ?, updated_at = datetime('now') WHERE id = ?")
-      .run(archived ? 1 : 0, id);
+    const transaction = this.db.transaction(() => {
+      const result = this.db
+        .prepare("UPDATE conversations SET archived = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(archived ? 1 : 0, id);
+      if (archived) {
+        this.db
+          .prepare("UPDATE workspace_state SET active_conversation_id = NULL, updated_at = datetime('now') WHERE active_conversation_id = ?")
+          .run(id);
+      }
+      return result;
+    });
+    const result = transaction();
     return result.changes > 0 ? this.getConversation(id) : null;
   }
 
   deleteConversation(id: string): boolean {
     const transaction = this.db.transaction(() => {
+      this.db.prepare("UPDATE workspace_state SET active_conversation_id = NULL, updated_at = datetime('now') WHERE active_conversation_id = ?").run(id);
+      this.db.prepare("DELETE FROM conversation_events WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM tasks WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
       return this.db.prepare("DELETE FROM conversations WHERE id = ?").run(id).changes > 0;
     });
     return transaction();
+  }
+
+  addEvent(conversationId: string, event: Record<string, unknown>) {
+    const kind = typeof event.kind === "string" ? event.kind : "event";
+    const runId = typeof event.runId === "string" ? event.runId : null;
+    this.db
+      .prepare("INSERT INTO conversation_events (conversation_id, run_id, kind, payload) VALUES (?, ?, ?, ?)")
+      .run(conversationId, runId, kind, JSON.stringify(event));
+  }
+
+  listEvents(conversationId: string, options: { afterId?: number } = {}): StoredEvent[] {
+    const afterId = Number.isFinite(options.afterId) ? Number(options.afterId) : 0;
+    const rows = this.db
+      .prepare("SELECT id, conversation_id, run_id, kind, payload, created_at FROM conversation_events WHERE conversation_id = ? AND id > ? ORDER BY id")
+      .all(conversationId, afterId) as EventRow[];
+    return rows.map((row) => ({
+      id: row.id,
+      conversationId: row.conversation_id,
+      runId: row.run_id ?? undefined,
+      kind: row.kind,
+      event: JSON.parse(row.payload) as Record<string, unknown>,
+      createdAt: row.created_at,
+    }));
+  }
+
+  setActiveConversation(workspace: string, conversationId: string | null) {
+    const absolute = path.resolve(workspace);
+    if (conversationId) {
+      const row = this.db
+        .prepare("SELECT id FROM conversations WHERE id = ? AND workspace = ? AND archived = 0")
+        .get(conversationId, absolute);
+      if (!row) return false;
+    }
+    this.db
+      .prepare(`
+        INSERT INTO workspace_state (workspace, active_conversation_id, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(workspace) DO UPDATE SET
+          active_conversation_id = excluded.active_conversation_id,
+          updated_at = excluded.updated_at
+      `)
+      .run(absolute, conversationId);
+    return true;
+  }
+
+  getActiveConversation(workspace: string): StoredConversation | null {
+    const absolute = path.resolve(workspace);
+    const row = this.db
+      .prepare("SELECT active_conversation_id FROM workspace_state WHERE workspace = ?")
+      .get(absolute) as { active_conversation_id: string | null } | undefined;
+    if (!row?.active_conversation_id) return this.latestConversation(absolute);
+    const conversation = this.getConversation(row.active_conversation_id);
+    if (!conversation || conversation.archived) return this.latestConversation(absolute);
+    return conversation;
   }
 
   private hydrateConversation(row: ConversationRow): StoredConversation {
@@ -191,4 +319,22 @@ type ConversationRow = {
   title: string;
   archived: number;
   updated_at: string;
+};
+
+type EventRow = {
+  id: number;
+  conversation_id: string;
+  run_id: string | null;
+  kind: string;
+  payload: string;
+  created_at: string;
+};
+
+type WorkspaceMetadataRow = {
+  path: string;
+  granted_at: string;
+  active_conversation_id: string | null;
+  updated_at: string | null;
+  session_count: number;
+  archived_session_count: number;
 };
