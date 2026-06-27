@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { ToolRegistry } from "../agent/tools/registry.js";
 import { builtInFileTools } from "../agent/tools/file-tools.js";
@@ -276,6 +277,45 @@ describe("local HTTP server", () => {
     });
   });
 
+  it("connects MCP servers and exposes discovered tools through HTTP", async () => {
+    const { handle, workspace, resourceRoot } = await createTestServer();
+    const serverPath = fileURLToPath(new URL("../mcp/fixtures/echo-server.mjs", import.meta.url));
+    await writeManifest(path.join(resourceRoot, "mcp.json"), {
+      servers: {
+        echo: {
+          command: process.execPath,
+          args: [serverPath],
+          enabled: true,
+          confirmTools: false,
+        },
+      },
+    });
+
+    const initial = await getJson(`${handle.url}/mcp`) as {
+      servers: Array<{ name: string; connected: boolean; tools: string[] }>;
+    };
+    expect(initial.servers).toMatchObject([{ name: "echo", connected: false, tools: [] }]);
+
+    const connected = await postJson(`${handle.url}/mcp/echo/connect`, { workspace }) as {
+      servers: Array<{ name: string; connected: boolean; tools: string[] }>;
+      tools: string[];
+    };
+    expect(connected.servers).toMatchObject([
+      { name: "echo", connected: true, tools: ["mcp__echo__echo"] },
+    ]);
+    expect(connected.tools).toContain("mcp__echo__echo");
+
+    const tools = await getJson(`${handle.url}/tools`) as { tools: string[] };
+    expect(tools.tools).toContain("mcp__echo__echo");
+
+    const disconnected = await postJson(`${handle.url}/mcp/echo/disconnect`, {}) as {
+      servers: Array<{ name: string; connected: boolean; tools: string[] }>;
+      tools: string[];
+    };
+    expect(disconnected.servers).toMatchObject([{ name: "echo", connected: false, tools: [] }]);
+    expect(disconnected.tools).not.toContain("mcp__echo__echo");
+  }, 15_000);
+
   it("serves session artifacts through HTTP", async () => {
     const { handle, workspace, store } = await createTestServer();
     await postJson(`${handle.url}/workspaces`, { folder: workspace });
@@ -376,6 +416,18 @@ describe("local HTTP server", () => {
       "file_created",
       "file_read",
     ]));
+
+    const outsidePath = path.join(workspace, "..", "outside.txt");
+    await writeFile(outsidePath, "outside");
+    await expectHttpError(`${handle.url}/sessions/${created.conversation.id}/artifacts`, {
+      path: outsidePath,
+    }, 400, "workspace");
+    await expectHttpError(`${handle.url}/sessions/${created.conversation.id}/files/read`, {
+      paths: ["../outside.txt"],
+    }, 400, "workspace");
+    await expectHttpError(`${handle.url}/sessions/${created.conversation.id}/files/write`, {
+      files: [{ path: "../outside.txt", content: "escape" }],
+    }, 400, "workspace");
   });
 });
 
@@ -436,6 +488,17 @@ async function postJson(url: string, body: Record<string, unknown>) {
   });
   expect(response.ok).toBe(true);
   return response.json();
+}
+
+async function expectHttpError(url: string, body: Record<string, unknown>, status: number, messageIncludes: string) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  expect(response.status).toBe(status);
+  const parsed = await response.json() as { error?: string };
+  expect(parsed.error).toContain(messageIncludes);
 }
 
 async function patchJson(url: string, body: Record<string, unknown>) {

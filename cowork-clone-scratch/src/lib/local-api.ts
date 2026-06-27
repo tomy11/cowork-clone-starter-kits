@@ -230,6 +230,35 @@ export class LocalApiClient {
     return this.get<ProviderModelsResult>(`/providers/${encodeURIComponent(providerId)}/models`);
   }
 
+  async listSkills() {
+    const result = await this.get<{ skills: SkillSummary[] }>("/skills");
+    return result.skills;
+  }
+
+  async listTools() {
+    const result = await this.get<{ tools: string[] }>("/tools");
+    return result.tools;
+  }
+
+  async listMcpServers() {
+    const result = await this.get<{ servers: McpServerSummary[] }>("/mcp");
+    return result.servers;
+  }
+
+  async connectMcp(serverName: string, workspace?: string | null) {
+    return this.post<{ servers: McpServerSummary[]; tools: string[] }>(
+      `/mcp/${encodeURIComponent(serverName)}/connect`,
+      workspace ? { workspace } : {},
+    );
+  }
+
+  async disconnectMcp(serverName: string) {
+    return this.post<{ servers: McpServerSummary[]; tools: string[] }>(
+      `/mcp/${encodeURIComponent(serverName)}/disconnect`,
+      {},
+    );
+  }
+
   async listExtensions() {
     const result = await this.get<{ extensions: ExtensionSummary[] }>("/extensions");
     return result.extensions;

@@ -9,6 +9,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 type RpcResult = Result<serde_json::Value, String>;
@@ -59,6 +60,17 @@ struct AgentEventPayload {
 #[serde(rename_all = "camelCase")]
 struct SidecarBootstrap {
     http_url: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalCommandOutput {
+    command: String,
+    cwd: String,
+    stdout: String,
+    stderr: String,
+    code: Option<i32>,
+    duration_ms: u128,
 }
 
 #[tauri::command]
@@ -326,6 +338,58 @@ fn spawn_open_command(path: &Path, reveal: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn run_terminal_command(workspace: String, command: String) -> Result<TerminalCommandOutput, String> {
+    tauri::async_runtime::spawn_blocking(move || run_terminal_command_blocking(workspace, command))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn run_terminal_command_blocking(workspace: String, command: String) -> Result<TerminalCommandOutput, String> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err("Command is required".to_string());
+    }
+    let cwd = PathBuf::from(&workspace);
+    if !cwd.is_dir() {
+        return Err("Workspace directory does not exist".to_string());
+    }
+
+    let started = Instant::now();
+    let mut process = if cfg!(target_os = "windows") {
+        let mut process = Command::new("cmd");
+        process.args(["/C", trimmed]);
+        process
+    } else {
+        let mut process = Command::new("sh");
+        process.args(["-lc", trimmed]);
+        process
+    };
+    let output = process
+        .current_dir(&cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| format!("Failed to run command: {error}"))?;
+
+    Ok(TerminalCommandOutput {
+        command: trimmed.to_string(),
+        cwd: cwd.to_string_lossy().to_string(),
+        stdout: truncate_terminal_output(String::from_utf8_lossy(&output.stdout).to_string()),
+        stderr: truncate_terminal_output(String::from_utf8_lossy(&output.stderr).to_string()),
+        code: output.status.code(),
+        duration_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn truncate_terminal_output(value: String) -> String {
+    const LIMIT: usize = 80_000;
+    if value.len() <= LIMIT {
+        return value;
+    }
+    format!("{}...\n[output truncated]", &value[..LIMIT])
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -340,6 +404,7 @@ fn main() {
             run,
             open_path,
             reveal_path,
+            run_terminal_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

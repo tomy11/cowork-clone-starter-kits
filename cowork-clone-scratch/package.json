@@ -14,7 +14,10 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "sidecar": "node --env-file=.env --import tsx core/index.ts",
+    "sandbox": "node scripts/sandbox-command.mjs",
+    "release:check": "node scripts/release-check.mjs",
     "test": "vitest run",
+    "test:smoke": "vitest run core/app-smoke.test.ts",
     "test:watch": "vitest",
     "lint": "eslint . --ext .ts,.tsx"
   },

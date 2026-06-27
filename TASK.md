@@ -40,6 +40,18 @@
 - [x] Artifact preview/open/reveal actions for session files
 - [x] Batch file read/write API scoped to session workspaces
 - [x] Replayable file read/change events for session file workflows
+- [x] Product settings area with provider, skills, MCP, and extension surfaces
+- [x] Permission approval modal with request details and allow/deny actions
+- [x] Optional terminal dock for running workspace commands
+- [x] Sidebar navigation hooks for search, skills, MCP, and session files
+- [x] Sidecar HTTP startup and mock session-send smoke test
+- [x] Dedicated app smoke test script wired into CI
+- [x] Permission and workspace-boundary regression tests
+- [x] MCP and skills HTTP integration endpoints with fixture-backed coverage
+- [x] Release installer workflow with preflight checks and signing/updater guidance
+- [x] Optional Docker command sandbox helper with dry-run coverage
+- [x] Release preflight check for version, bundle, docs, and workflow readiness
+- [x] Local macOS Tauri release bundle verified with app and DMG output
 
 ## Release follow-up
 

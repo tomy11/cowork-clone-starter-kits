@@ -29,6 +29,24 @@ describe("PermissionACL", () => {
     expect(decision).toMatchObject({ allowed: true, requiresConfirm: true });
   });
 
+  it("recognizes file path aliases and explicit operations", async () => {
+    const acl = new PermissionACL();
+    const folder = path.resolve("/tmp/cowork-project");
+    acl.grantFolder(folder, { write: "allow" });
+
+    const aliasDecision = await acl.check("custom_tool", {
+      file_path: path.join(folder, "notes.md"),
+      operation: "read",
+    });
+    const writeAliasDecision = await acl.check("custom_tool", {
+      filepath: path.join(folder, "notes.md"),
+      operation: "write",
+    });
+
+    expect(aliasDecision).toMatchObject({ allowed: true, requiresConfirm: false });
+    expect(writeAliasDecision).toMatchObject({ allowed: true, requiresConfirm: false });
+  });
+
   it("denies files outside the granted folder", async () => {
     const acl = new PermissionACL();
     acl.grantFolder(path.resolve("/tmp/cowork-project"));
@@ -46,6 +64,18 @@ describe("PermissionACL", () => {
 
     const decision = await acl.check("read_file", {
       path: path.resolve("/tmp/cowork-project-private/secrets.txt"),
+    });
+
+    expect(decision.allowed).toBe(false);
+  });
+
+  it("denies parent traversal out of a granted folder", async () => {
+    const acl = new PermissionACL();
+    const folder = path.resolve("/tmp/cowork-project");
+    acl.grantFolder(folder);
+
+    const decision = await acl.check("read_file", {
+      path: path.join(folder, "..", "other-project", "secrets.txt"),
     });
 
     expect(decision.allowed).toBe(false);

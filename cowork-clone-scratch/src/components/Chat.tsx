@@ -14,7 +14,13 @@ import type {
 } from "../lib/local-api";
 
 type BridgeEvent = { requestId: string; event: AgentEvent };
-type Confirmation = { id: string; prompt: string };
+type Confirmation = {
+  id: string;
+  prompt: string;
+  tool: string | null;
+  agentId: string | null;
+  args: Record<string, unknown> | null;
+};
 type AgentProgress = {
   id: string;
   task: string;
@@ -27,6 +33,8 @@ type Props = {
   sessionId: string | null;
   resumeLatest: boolean;
   localApi: LocalApiClient | null;
+  focusInputKey?: number;
+  focusFilesKey?: number;
   providers: ProviderProfile[];
   selectedProviderId: string | null;
   onSelectProvider: (providerId: string | null) => void;
@@ -45,6 +53,8 @@ export function Chat({
   sessionId,
   resumeLatest,
   localApi,
+  focusInputKey = 0,
+  focusFilesKey = 0,
   providers,
   selectedProviderId,
   onSelectProvider,
@@ -62,6 +72,7 @@ export function Chat({
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const filesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const activeRunId = useRef<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -82,9 +93,7 @@ export function Chat({
         const content = event.content;
         setMessages((current) => [...current, { role: "assistant", content }]);
       } else if (event.kind === "confirmation_requested") {
-        if (typeof event.confirmationId === "string" && typeof event.prompt === "string") {
-          setConfirmation({ id: event.confirmationId, prompt: event.prompt });
-        }
+        setConfirmation(confirmationFromEvent(event));
       } else if (event.kind === "confirmation_resolved") {
         setConfirmation(null);
       }
@@ -152,6 +161,18 @@ export function Chat({
     inputRef.current?.focus();
   }, [folder]);
 
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, [focusInputKey]);
+
+  useEffect(() => {
+    if (filesRef.current) {
+      filesRef.current.scrollIntoView({ block: "start", behavior: "smooth" });
+    } else {
+      inputRef.current?.focus();
+    }
+  }, [focusFilesKey]);
+
   function applyAgentEvent(event: AgentEvent) {
     if (event.kind === "plan" && Array.isArray(event.steps)) {
       const planned: Record<string, AgentProgress> = {};
@@ -203,9 +224,7 @@ export function Chat({
       const content = event.content;
       setMessages((current) => [...current, { role: "assistant", content }]);
     } else if (event.kind === "confirmation_requested") {
-      if (typeof event.confirmationId === "string" && typeof event.prompt === "string") {
-        setConfirmation({ id: event.confirmationId, prompt: event.prompt });
-      }
+      setConfirmation(confirmationFromEvent(event));
     } else if (event.kind === "confirmation_resolved") {
       setConfirmation(null);
     }
@@ -218,9 +237,7 @@ export function Chat({
       applyAgentEvent(event);
       applyArtifactEvent(event);
       if (event.kind === "confirmation_requested") {
-        if (typeof event.confirmationId === "string" && typeof event.prompt === "string") {
-          setConfirmation({ id: event.confirmationId, prompt: event.prompt });
-        }
+        setConfirmation(confirmationFromEvent(event));
       } else if (event.kind === "confirmation_resolved") {
         setConfirmation(null);
       }
@@ -449,15 +466,17 @@ export function Chat({
               )}
 
               {(artifacts.length > 0 || (conversationId && localApi)) && (
-                <ArtifactPanel
-                  artifacts={artifacts}
-                  loadingPreviewId={previewLoadingId}
-                  previewId={artifactPreview?.artifact.id ?? null}
-                  onAttach={conversationId && localApi ? attachFile : undefined}
-                  onPreview={localApi ? previewArtifact : undefined}
-                  onOpen={openArtifact}
-                  onReveal={revealArtifact}
-                />
+                <div ref={filesRef}>
+                  <ArtifactPanel
+                    artifacts={artifacts}
+                    loadingPreviewId={previewLoadingId}
+                    previewId={artifactPreview?.artifact.id ?? null}
+                    onAttach={conversationId && localApi ? attachFile : undefined}
+                    onPreview={localApi ? previewArtifact : undefined}
+                    onOpen={openArtifact}
+                    onReveal={revealArtifact}
+                  />
+                </div>
               )}
               {artifactPreview && <ArtifactPreviewPanel result={artifactPreview} onClose={() => setArtifactPreview(null)} />}
 
@@ -492,11 +511,10 @@ export function Chat({
       )}
 
       {confirmation && (
-        <div className="confirmation-bar" role="alert">
-          <div><strong>Permission required</strong><span>{confirmation.prompt}</span></div>
-          <button type="button" className="button-secondary" onClick={() => void respondToConfirmation(false)}>Deny</button>
-          <button type="button" className="button-primary" onClick={() => void respondToConfirmation(true)}>Allow once</button>
-        </div>
+        <PermissionApprovalModal
+          confirmation={confirmation}
+          onRespond={(approved) => void respondToConfirmation(approved)}
+        />
       )}
     </div>
   );
@@ -505,6 +523,39 @@ export function Chat({
     if (!isArtifactEvent(event)) return;
     setArtifacts((current) => upsertArtifact(current, event.artifact));
   }
+}
+
+function PermissionApprovalModal({
+  confirmation,
+  onRespond,
+}: {
+  confirmation: Confirmation;
+  onRespond: (approved: boolean) => void;
+}) {
+  return (
+    <div className="permission-overlay" role="dialog" aria-modal="true" aria-label="Permission approval">
+      <section className="permission-modal">
+        <header>
+          <div className="permission-icon"><Icon name="settings" size={18} /></div>
+          <div>
+            <strong>Permission Required</strong>
+            <span>{confirmation.tool ?? "Tool request"}{confirmation.agentId ? ` · ${confirmation.agentId}` : ""}</span>
+          </div>
+        </header>
+        <p>{confirmation.prompt}</p>
+        {confirmation.args && (
+          <details className="permission-details">
+            <summary>Request details</summary>
+            <pre>{formatConfirmationArgs(confirmation.args)}</pre>
+          </details>
+        )}
+        <footer>
+          <button type="button" className="button-secondary" onClick={() => onRespond(false)}>Deny</button>
+          <button type="button" className="button-primary" onClick={() => onRespond(true)}>Allow once</button>
+        </footer>
+      </section>
+    </div>
+  );
 }
 
 function ArtifactPanel({
@@ -621,6 +672,21 @@ function isArtifact(value: unknown): value is ArtifactSummary {
     && typeof artifact.kind === "string";
 }
 
+function confirmationFromEvent(event: AgentEvent): Confirmation | null {
+  if (typeof event.confirmationId !== "string" || typeof event.prompt !== "string") return null;
+  return {
+    id: event.confirmationId,
+    prompt: event.prompt,
+    tool: typeof event.tool === "string" ? event.tool : null,
+    agentId: typeof event.agentId === "string" ? event.agentId : null,
+    args: isRecord(event.args) ? event.args : null,
+  };
+}
+
+function formatConfirmationArgs(args: Record<string, unknown>) {
+  return JSON.stringify(args, null, 2);
+}
+
 function upsertArtifact(current: ArtifactSummary[], artifact: ArtifactSummary) {
   const rest = current.filter((item) => item.id !== artifact.id);
   return [artifact, ...rest];
@@ -650,6 +716,10 @@ function formatBytes(size: number | null) {
 function shortPath(filePath: string) {
   const parts = filePath.split(/[\\/]/).filter(Boolean);
   return parts.slice(-3).join("/");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function waitForEventSourceOpen(source: EventSource) {

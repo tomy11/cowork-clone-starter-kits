@@ -97,6 +97,50 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/skills") {
+      const result = await runtime.handle({ id: requestId(), method: "list_skills", params: {} });
+      writeRpc(response, result, 200);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/tools") {
+      const result = await runtime.handle({ id: requestId(), method: "list_tools", params: {} });
+      writeRpc(response, result, 200);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/mcp") {
+      const result = await runtime.handle({ id: requestId(), method: "mcp_status", params: {} });
+      writeRpc(response, result, 200);
+      return;
+    }
+
+    const mcpConnectMatch = url.pathname.match(/^\/mcp\/([^/]+)\/connect$/);
+    if (request.method === "POST" && mcpConnectMatch) {
+      const body = await readJson(request);
+      const result = await runtime.handle({
+        id: requestId(),
+        method: "mcp_connect",
+        params: {
+          name: decodeURIComponent(mcpConnectMatch[1]),
+          workspace: stringField(body, "workspace"),
+        },
+      });
+      writeRpc(response, result, 200);
+      return;
+    }
+
+    const mcpDisconnectMatch = url.pathname.match(/^\/mcp\/([^/]+)\/disconnect$/);
+    if (request.method === "POST" && mcpDisconnectMatch) {
+      const result = await runtime.handle({
+        id: requestId(),
+        method: "mcp_disconnect",
+        params: { name: decodeURIComponent(mcpDisconnectMatch[1]) },
+      });
+      writeRpc(response, result, 200);
+      return;
+    }
+
     const extensionMatch = url.pathname.match(/^\/extensions\/([^/]+)$/);
     if (request.method === "GET" && extensionMatch) {
       const extension = await runtime.getExtension(decodeURIComponent(extensionMatch[1]));

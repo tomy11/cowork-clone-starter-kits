@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Icon, type IconName } from "./Icon";
+import type { SettingsTab } from "./ProviderSettings";
 import type { ExtensionSummary, LocalApiClient, McpServerSummary, SessionSummary, SkillSummary } from "../lib/local-api";
 
 type Props = {
@@ -20,13 +21,16 @@ type Props = {
   onRefreshSessions: () => void;
   onRefreshExtensions: () => void;
   onNewTask: () => void;
+  onFocusSearch: () => void;
+  onFocusAssets: () => void;
+  onOpenSettingsTab: (tab: SettingsTab) => void;
 };
 
-const primaryNav: Array<{ label: string; icon: IconName }> = [
-  { label: "Search", icon: "search" },
-  { label: "Skills", icon: "book" },
-  { label: "Scheduled", icon: "clock" },
-  { label: "Assets", icon: "folder" },
+const primaryNav: Array<{ label: string; icon: IconName; action: "search" | "skills" | "scheduled" | "assets" }> = [
+  { label: "Search", icon: "search", action: "search" },
+  { label: "Skills", icon: "book", action: "skills" },
+  { label: "Scheduled", icon: "clock", action: "scheduled" },
+  { label: "Assets", icon: "folder", action: "assets" },
 ];
 
 export function Sidebar({
@@ -46,6 +50,9 @@ export function Sidebar({
   onRefreshSessions,
   onRefreshExtensions,
   onNewTask,
+  onFocusSearch,
+  onFocusAssets,
+  onOpenSettingsTab,
 }: Props) {
   const [collapsed, setCollapsed] = useState(false);
   const [folders, setFolders] = useState(grantedFolders);
@@ -68,6 +75,13 @@ export function Sidebar({
 
   function newTask() {
     onNewTask();
+  }
+
+  function runNavAction(action: "search" | "skills" | "scheduled" | "assets") {
+    if (action === "search") onFocusSearch();
+    else if (action === "skills") onOpenSettingsTab("skills");
+    else if (action === "scheduled") onOpenSettingsTab("mcp");
+    else onFocusAssets();
   }
 
   async function renameSession(session: SessionSummary) {
@@ -122,7 +136,7 @@ export function Sidebar({
             <span>New task</span>
           </button>
           {primaryNav.map((item) => (
-            <button className="nav-item" type="button" key={item.label}>
+            <button className="nav-item" type="button" key={item.label} onClick={() => runNavAction(item.action)}>
               <Icon name={item.icon} size={18} />
               <span>{item.label}</span>
             </button>

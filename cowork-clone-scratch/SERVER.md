@@ -37,6 +37,11 @@ The Tauri shell now sets `COWORK_HTTP_PORT` automatically when it spawns the sid
 - `GET /providers/:id/models`
 - `GET /extensions`
 - `GET /extensions/:id`
+- `GET /skills`
+- `GET /tools`
+- `GET /mcp`
+- `POST /mcp/:name/connect`
+- `POST /mcp/:name/disconnect`
 - `GET /sessions?workspace=/path/to/workspace`
 - `POST /sessions`
 - `GET /sessions/:id`
@@ -119,6 +124,7 @@ curl -X POST http://127.0.0.1:8787/sessions/<session-id>/files/write \
 - Extension responses include local readiness checks for missing setup env vars and unresolved skill/MCP resources.
 - Ready, enabled extension skills are merged into the runtime skill catalog used by JSON-RPC and agent runs.
 - A bundled `qa-workflow` extension shows the local manifest shape and groups the starter kit's QA skills and check commands.
+- Skills, tool registry names, and MCP server connect/disconnect are exposed through the local HTTP boundary.
 - File artifacts created or moved by agent file tools are persisted per session and exposed through artifact read endpoints.
 - Existing files inside the session workspace can be attached through `POST /sessions/:id/artifacts`.
 - Text and small image artifact previews are available through `GET /artifacts/:id/preview`.

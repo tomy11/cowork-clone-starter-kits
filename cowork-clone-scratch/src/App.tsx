@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Chat } from "./components/Chat";
-import { ProviderSettings } from "./components/ProviderSettings";
+import { ProviderSettings, type SettingsTab } from "./components/ProviderSettings";
 import { Sidebar } from "./components/Sidebar";
+import { TerminalDock } from "./components/TerminalDock";
 import { Icon } from "./components/Icon";
 import {
   LocalApiClient,
@@ -28,7 +29,11 @@ export default function App() {
   const [providers, setProviders] = useState<ProviderProfile[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("providers");
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [chatKey, setChatKey] = useState(0);
+  const [focusInputKey, setFocusInputKey] = useState(0);
+  const [focusFilesKey, setFocusFilesKey] = useState(0);
   const [resumeLatest, setResumeLatest] = useState(true);
 
   useEffect(() => {
@@ -41,9 +46,9 @@ export default function App() {
         api.listWorkspaces(),
         api.listProviders(),
         api.listExtensions(),
-        invoke<{ skills: SkillSummary[] }>("list_skills"),
-        invoke<{ tools: string[] }>("list_tools"),
-        invoke<{ servers: McpServerSummary[] }>("call_sidecar", { method: "mcp_status", params: {} }),
+        api.listSkills(),
+        api.listTools(),
+        api.listMcpServers(),
       ]);
 
       setGrantedFolders(folders);
@@ -52,10 +57,10 @@ export default function App() {
         current ?? providersResult.find((provider) => provider.isDefault)?.id ?? providersResult[0]?.id ?? null,
       );
       setSelectedFolder((current) => current ?? folders[0] ?? null);
-      setSkills(skillsResult.skills ?? []);
+      setSkills(skillsResult);
       setExtensions(extensionsResult);
-      setTools(toolsResult.tools ?? []);
-      setMcpServers(mcpResult.servers ?? []);
+      setTools(toolsResult);
+      setMcpServers(mcpResult);
     }
 
     initialize().catch((error) => {
@@ -124,6 +129,11 @@ export default function App() {
     setChatKey((key) => key + 1);
   }
 
+  function openSettings(tab: SettingsTab) {
+    setSettingsInitialTab(tab);
+    setSettingsOpen(true);
+  }
+
   return (
     <div className="app-shell">
       <Sidebar
@@ -143,6 +153,9 @@ export default function App() {
         onRefreshSessions={() => void refreshSessions()}
         onRefreshExtensions={() => void refreshExtensions()}
         onNewTask={startNewTask}
+        onFocusSearch={() => setFocusInputKey((key) => key + 1)}
+        onFocusAssets={() => setFocusFilesKey((key) => key + 1)}
+        onOpenSettingsTab={openSettings}
       />
 
       <main className="workspace">
@@ -161,7 +174,16 @@ export default function App() {
             <button className="icon-button" aria-label="Task notes" title="Task notes">
               <Icon name="document" size={17} />
             </button>
-            <button className="icon-button" type="button" aria-label="Provider settings" title="Provider settings" onClick={() => setSettingsOpen(true)}>
+            <button
+              className={`icon-button${terminalOpen ? " is-active" : ""}`}
+              type="button"
+              aria-label="Toggle terminal"
+              title="Terminal"
+              onClick={() => setTerminalOpen((open) => !open)}
+            >
+              <Icon name="code" size={17} />
+            </button>
+            <button className="icon-button" type="button" aria-label="Provider settings" title="Provider settings" onClick={() => openSettings("providers")}>
               <Icon name="settings" size={17} />
             </button>
             <button className="download-button" type="button">
@@ -177,6 +199,8 @@ export default function App() {
           sessionId={selectedSessionId}
           resumeLatest={resumeLatest}
           localApi={localApi}
+          focusInputKey={focusInputKey}
+          focusFilesKey={focusFilesKey}
           providers={providers}
           selectedProviderId={selectedProviderId}
           onSelectProvider={setSelectedProviderId}
@@ -186,13 +210,20 @@ export default function App() {
             void refreshSessions(session.workspace);
           }}
         />
+        {terminalOpen && <TerminalDock folder={selectedFolder} onClose={() => setTerminalOpen(false)} />}
       </main>
 
       {settingsOpen && (
         <ProviderSettings
           localApi={localApi}
           providers={providers}
+          skills={skills}
+          extensions={extensions}
+          tools={tools}
+          mcpServers={mcpServers}
+          selectedFolder={selectedFolder}
           selectedProviderId={selectedProviderId}
+          initialTab={settingsInitialTab}
           onClose={() => setSettingsOpen(false)}
           onSelectProvider={setSelectedProviderId}
           onProvidersChange={(nextProviders) => {
@@ -204,6 +235,11 @@ export default function App() {
             );
           }}
           onRefreshProviders={() => void refreshProviders()}
+          onRefreshExtensions={() => void refreshExtensions()}
+          onRefreshMcp={async () => {
+            if (!localApi) return;
+            setMcpServers(await localApi.listMcpServers());
+          }}
         />
       )}
     </div>
