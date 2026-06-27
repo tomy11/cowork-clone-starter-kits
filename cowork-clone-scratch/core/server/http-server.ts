@@ -149,6 +149,19 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
       return;
     }
 
+    if (request.method === "PATCH" && extensionMatch) {
+      const extensionId = decodeURIComponent(extensionMatch[1]);
+      const body = await readJson(request);
+      const enabled = Boolean((body as Record<string, unknown>).enabled);
+      const result = await runtime.handle({
+        id: requestId(),
+        method: enabled ? "enable_extension" : "disable_extension",
+        params: { extensionId },
+      });
+      writeRpc(response, result, 200);
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/providers") {
       const body = await readJson(request);
       const result = await runtime.handle({
@@ -339,7 +352,7 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
       const body = await readJson(request);
       let result;
       try {
-        result = runtime.batchReadFiles(conversationId, batchReadInput(body));
+        result = await runtime.batchReadFiles(conversationId, batchReadInput(body));
       } catch (error) {
         return writeJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }
@@ -355,7 +368,7 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
       const body = await readJson(request);
       let result;
       try {
-        result = runtime.batchWriteFiles(conversationId, batchWriteInput(body));
+        result = await runtime.batchWriteFiles(conversationId, batchWriteInput(body));
       } catch (error) {
         return writeJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }

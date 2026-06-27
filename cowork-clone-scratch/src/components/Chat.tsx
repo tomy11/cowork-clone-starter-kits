@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { marked } from "marked";
+import mammoth from "mammoth";
+import * as XLSX from "xlsx";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -80,17 +83,7 @@ export function Chat({
       const event = payload.event;
       if (disposed || !activeRunId.current || event.runId !== activeRunId.current) return;
       setEvents((current) => [...current, event]);
-      applyAgentEvent(event);
-      applyArtifactEvent(event);
-
-      if (event.kind === "final" && typeof event.content === "string") {
-        const content = event.content;
-        setMessages((current) => [...current, { role: "assistant", content }]);
-      } else if (event.kind === "confirmation_requested") {
-        setConfirmation(confirmationFromEvent(event));
-      } else if (event.kind === "confirmation_resolved") {
-        setConfirmation(null);
-      }
+      dispatchEvent(event);
     }).then((unlisten) => {
       if (disposed) unlisten();
       else cleanupListener.current = unlisten;
@@ -204,12 +197,9 @@ export function Chat({
     });
   }
 
-  function handleAgentEvent(event: AgentEvent) {
-    if (!activeRunId.current || event.runId !== activeRunId.current) return;
-    setEvents((current) => [...current, event]);
+  function dispatchEvent(event: AgentEvent) {
     applyAgentEvent(event);
     applyArtifactEvent(event);
-
     if (event.kind === "final" && typeof event.content === "string") {
       const content = event.content;
       setMessages((current) => [...current, { role: "assistant", content }]);
@@ -220,18 +210,16 @@ export function Chat({
     }
   }
 
+  function handleAgentEvent(event: AgentEvent) {
+    if (!activeRunId.current || event.runId !== activeRunId.current) return;
+    setEvents((current) => [...current, event]);
+    dispatchEvent(event);
+  }
+
   function replayEvents(replayed: AgentEvent[]) {
     setEvents(replayed);
     setConfirmation(null);
-    for (const event of replayed) {
-      applyAgentEvent(event);
-      applyArtifactEvent(event);
-      if (event.kind === "confirmation_requested") {
-        setConfirmation(confirmationFromEvent(event));
-      } else if (event.kind === "confirmation_resolved") {
-        setConfirmation(null);
-      }
-    }
+    for (const event of replayed) dispatchEvent(event);
   }
 
   async function ensureHttpSession(title: string) {
@@ -278,6 +266,8 @@ export function Chat({
       workspace: folder,
       runId,
       conversationId,
+      providerProfileId: selectedProvider?.id ?? null,
+      model: selectedProvider?.model ?? null,
     });
     setConversationId(result.conversationId);
     if (result.status === "cancelled") {
@@ -1226,15 +1216,137 @@ function ArtifactPreviewPanel({ result, onClose }: { result: ArtifactPreviewResu
         </div>
         <button type="button" aria-label="Close preview" onClick={onClose}><Icon name="x" size={14} /></button>
       </div>
-      {preview.kind === "text" && (
-        <>
-          <pre>{preview.content}</pre>
-          {preview.truncated && <small>Preview truncated at {formatBytes(preview.limitBytes)}</small>}
-        </>
-      )}
+      {preview.kind === "text" && (() => {
+        const mime = artifact.mimeType;
+        if (mime === "text/markdown" || artifact.name.endsWith(".md")) {
+          return <MarkdownPreview content={preview.content} truncated={preview.truncated} limitBytes={preview.limitBytes} />;
+        }
+        if (mime === "text/csv" || artifact.name.endsWith(".csv")) {
+          return <CsvPreview content={preview.content} truncated={preview.truncated} limitBytes={preview.limitBytes} />;
+        }
+        return (
+          <>
+            <pre>{preview.content}</pre>
+            {preview.truncated && <small>Preview truncated at {formatBytes(preview.limitBytes)}</small>}
+          </>
+        );
+      })()}
       {preview.kind === "image" && <img src={preview.dataUrl} alt={artifact.name} />}
+      {preview.kind === "document" && <DocumentPreview dataBase64={preview.dataBase64} mimeType={preview.mimeType} name={artifact.name} />}
       {(preview.kind === "binary" || preview.kind === "missing") && <p>{preview.message}</p>}
     </section>
+  );
+}
+
+function MarkdownPreview({ content, truncated, limitBytes }: { content: string; truncated: boolean; limitBytes: number }) {
+  const html = marked.parse(content, { async: false }) as string;
+  return (
+    <div className="artifact-preview-md">
+      <div dangerouslySetInnerHTML={{ __html: html }} />
+      {truncated && <small>Preview truncated at {formatBytes(limitBytes)}</small>}
+    </div>
+  );
+}
+
+function CsvPreview({ content, truncated, limitBytes }: { content: string; truncated: boolean; limitBytes: number }) {
+  const rows = parseCsvPreview(content);
+  const [headers, ...body] = rows;
+  return (
+    <div className="artifact-preview-csv">
+      <div className="artifact-preview-csv-scroll">
+        <table>
+          <thead><tr>{headers?.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
+          <tbody>{body.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody>
+        </table>
+      </div>
+      {truncated && <small>Preview truncated at {formatBytes(limitBytes)} — showing first {body.length} rows</small>}
+    </div>
+  );
+}
+
+function parseCsvPreview(content: string): string[][] {
+  return content.split("\n").filter(Boolean).map((line) => {
+    const cells: string[] = [];
+    let cur = "", inQuote = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
+        else inQuote = !inQuote;
+      } else if (ch === "," && !inQuote) {
+        cells.push(cur); cur = "";
+      } else cur += ch;
+    }
+    cells.push(cur);
+    return cells;
+  });
+}
+
+function DocumentPreview({ dataBase64, mimeType, name }: { dataBase64: string; mimeType: string; name: string }) {
+  const [content, setContent] = useState<{ kind: "html"; html: string } | { kind: "table"; headers: string[]; rows: string[][] } | { kind: "pdf"; url: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const bytes = Uint8Array.from(atob(dataBase64), (c) => c.charCodeAt(0));
+
+    if (mimeType === "application/pdf") {
+      const blob = new Blob([bytes], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      setContent({ kind: "pdf", url });
+      return () => URL.revokeObjectURL(url);
+    }
+
+    if (
+      mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      || mimeType === "application/msword"
+    ) {
+      mammoth.convertToHtml({ arrayBuffer: bytes.buffer as ArrayBuffer })
+        .then((result) => setContent({ kind: "html", html: result.value }))
+        .catch((err) => setError(String(err)));
+      return;
+    }
+
+    if (
+      mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      || mimeType === "application/vnd.ms-excel"
+    ) {
+      try {
+        const wb = XLSX.read(bytes, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1 });
+        const [headers = [], ...rows] = data.map((row) => row.map(String));
+        setContent({ kind: "table", headers, rows });
+      } catch (err) {
+        setError(String(err));
+      }
+      return;
+    }
+
+    setError("Unsupported document type");
+  }, [dataBase64, mimeType]);
+
+  if (error) return <p className="artifact-preview-doc-error">{error}</p>;
+  if (!content) return <p className="artifact-preview-doc-loading">Loading preview…</p>;
+
+  if (content.kind === "pdf") {
+    return <iframe className="artifact-preview-pdf" src={content.url} title={name} />;
+  }
+  if (content.kind === "html") {
+    return (
+      <div className="artifact-preview-md artifact-preview-docx">
+        <div dangerouslySetInnerHTML={{ __html: content.html }} />
+      </div>
+    );
+  }
+  return (
+    <div className="artifact-preview-csv">
+      <div className="artifact-preview-csv-scroll">
+        <table>
+          <thead><tr>{content.headers.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
+          <tbody>{content.rows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 

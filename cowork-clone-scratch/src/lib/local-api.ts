@@ -93,6 +93,14 @@ export type ArtifactPreview =
       limitBytes: number;
     }
   | {
+      kind: "document";
+      dataBase64: string;
+      mimeType: string;
+      sizeBytes: number;
+      truncated: false;
+      limitBytes: number;
+    }
+  | {
       kind: "binary" | "missing";
       message: string;
       truncated: false;
@@ -266,6 +274,11 @@ export class LocalApiClient {
 
   async getExtension(extensionId: string) {
     const result = await this.get<{ extension: ExtensionSummary }>(`/extensions/${encodeURIComponent(extensionId)}`);
+    return result.extension;
+  }
+
+  async setExtensionEnabled(extensionId: string, enabled: boolean) {
+    const result = await this.patch<{ extension: ExtensionSummary }>(`/extensions/${encodeURIComponent(extensionId)}`, { enabled });
     return result.extension;
   }
 

@@ -86,6 +86,15 @@ export class ExtensionsLoader {
     return manifests.find((manifest) => manifest.id === id) ?? null;
   }
 
+  async setEnabled(id: string, enabled: boolean): Promise<void> {
+    const manifest = await this.get(id);
+    if (!manifest) throw new Error(`Extension not found: ${id}`);
+    const content = await fs.readFile(manifest.manifestPath, "utf-8");
+    const raw = JSON.parse(content) as Record<string, unknown>;
+    raw.enabled = enabled;
+    await fs.writeFile(manifest.manifestPath, JSON.stringify(raw, null, 2) + "\n", "utf-8");
+  }
+
   async listReadySkillResources(): Promise<ExtensionSkillResource[]> {
     const manifests = await this.list();
     const resources: ExtensionSkillResource[] = [];

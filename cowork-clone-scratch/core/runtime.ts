@@ -13,6 +13,8 @@ import * as path from "node:path";
 import { Orchestrator, type OrchestratorEvent } from "./agent/orchestrator.js";
 import { ToolRegistry } from "./agent/tools/registry.js";
 import { builtInFileTools } from "./agent/tools/file-tools.js";
+import { builtInDocumentTools } from "./agent/tools/document-tools.js";
+import { builtInShellTools } from "./agent/tools/shell-tools.js";
 import { PermissionACL } from "./permissions/acl.js";
 import { AuditLog } from "./permissions/audit.js";
 import { ClaudeProvider } from "./llm/claude.js";
@@ -112,6 +114,14 @@ export type ArtifactPreview =
       limitBytes: number;
     }
   | {
+      kind: "document";
+      dataBase64: string;
+      mimeType: string;
+      sizeBytes: number;
+      truncated: false;
+      limitBytes: number;
+    }
+  | {
       kind: "binary" | "missing";
       message: string;
       truncated: false;
@@ -144,6 +154,7 @@ export class AppRuntime {
   private pendingConfirmations = new Map<string, PendingConfirmation>();
   private sessionListeners = new Map<string, Set<SessionListener>>();
   private pendingToolCalls = new Map<string, Array<{ name: string; args: unknown; existedBefore?: boolean }>>();
+  private runToolCallKeys = new Set<string>();
 
   constructor(private cfg: AppRuntimeConfig) {}
 
@@ -212,6 +223,19 @@ export class AppRuntime {
         case "get_extension": {
           const extension = await this.cfg.extensions.get(String(request.params.extensionId));
           if (!extension) return { id: request.id, error: { message: "Extension not found", code: 404 } };
+          return { id: request.id, result: { extension } };
+        }
+
+        case "enable_extension":
+        case "disable_extension": {
+          const extId = String(request.params.extensionId);
+          const enabled = request.method === "enable_extension";
+          try {
+            await this.cfg.extensions.setEnabled(extId, enabled);
+          } catch {
+            return { id: request.id, error: { message: "Extension not found", code: 404 } };
+          }
+          const extension = await this.cfg.extensions.get(extId);
           return { id: request.id, result: { extension } };
         }
 
@@ -308,7 +332,7 @@ export class AppRuntime {
         }
 
         case "test_provider_profile": {
-          const result = this.testProviderProfile(String(request.params.providerId));
+          const result = await this.testProviderProfile(String(request.params.providerId));
           if (!result) return { id: request.id, error: { message: "Provider profile not found", code: 404 } };
           return { id: request.id, result };
         }
@@ -441,11 +465,28 @@ export class AppRuntime {
         },
       };
     }
+    const docLimit = 10 * 1024 * 1024; // 10MB cap for documents
+    if (isDocumentPreview(artifact) && stats.size <= docLimit) {
+      const dataBase64 = readFileSync(target).toString("base64");
+      return {
+        artifact,
+        preview: {
+          kind: "document",
+          dataBase64,
+          mimeType: artifact.mimeType,
+          sizeBytes: stats.size,
+          truncated: false,
+          limitBytes,
+        },
+      };
+    }
     return {
       artifact,
       preview: {
         kind: "binary",
-        message: "Preview is not available for this file type or size.",
+        message: stats.size > docLimit
+          ? `File is too large to preview (${Math.round(stats.size / 1024 / 1024)}MB). Open it with a native app instead.`
+          : "Preview is not available for this file type or size.",
         truncated: false,
         limitBytes,
       },
@@ -485,14 +526,17 @@ export class AppRuntime {
     return artifact;
   }
 
-  batchReadFiles(
+  async batchReadFiles(
     conversationId: string,
     files: Array<{ path: string; limitBytes?: number }>,
-  ): { files: BatchFileRead[] } | null {
+  ): Promise<{ files: BatchFileRead[] } | null> {
     const conversation = this.cfg.store.getConversation(conversationId);
     if (!conversation) return null;
-    const result = files.map((file) => {
+    const result: BatchFileRead[] = [];
+    for (const file of files) {
       const target = this.resolveSessionFilePath(conversation, file.path);
+      const permission = await this.cfg.acl.check("read_file", { path: target });
+      if (!permission.allowed) throw new Error(`Permission denied: cannot read ${target}${permission.reason ? ` — ${permission.reason}` : ""}`);
       if (!existsSync(target)) throw new Error(`File does not exist: ${target}`);
       const stats = statSync(target);
       if (!stats.isFile()) throw new Error(`Not a regular file: ${target}`);
@@ -515,19 +559,22 @@ export class AppRuntime {
         fileType: output.fileType,
         truncated: output.truncated,
       });
-      return output;
-    });
+      result.push(output);
+    }
     return { files: result };
   }
 
-  batchWriteFiles(
+  async batchWriteFiles(
     conversationId: string,
     files: Array<{ path: string; content: string }>,
-  ): { files: BatchFileWrite[] } | null {
+  ): Promise<{ files: BatchFileWrite[] } | null> {
     const conversation = this.cfg.store.getConversation(conversationId);
     if (!conversation) return null;
-    const result = files.map((file) => {
+    const result: BatchFileWrite[] = [];
+    for (const file of files) {
       const target = this.resolveSessionFilePath(conversation, file.path);
+      const permission = await this.cfg.acl.check("write_file", { path: target });
+      if (!permission.allowed) throw new Error(`Permission denied: cannot write ${target}${permission.reason ? ` — ${permission.reason}` : ""}`);
       const created = !existsSync(target);
       mkdirSync(path.dirname(target), { recursive: true });
       writeFileSync(target, file.content, "utf-8");
@@ -553,7 +600,7 @@ export class AppRuntime {
         mimeType: artifact.mimeType,
         fileType: artifact.fileType,
       });
-      return {
+      result.push({
         path: target,
         name: artifact.name,
         fileType: artifact.fileType,
@@ -561,8 +608,8 @@ export class AppRuntime {
         sizeBytes: artifact.sizeBytes,
         created,
         artifact,
-      };
-    });
+      });
+    }
     return { files: result };
   }
 
@@ -621,17 +668,39 @@ export class AppRuntime {
     return this.cfg.store.setDefaultProviderProfile(id);
   }
 
-  testProviderProfile(id: string): { ok: boolean; status: string; detail: string } | null {
+  async testProviderProfile(id: string): Promise<{ ok: boolean; status: string; detail: string } | null> {
     const provider = this.cfg.store.getProviderProfileWithSecret(id);
     if (!provider) return null;
+    if (provider.type === "mock") {
+      return { ok: true, status: "ready", detail: "Mock provider is always ready" };
+    }
     const readiness = validateProviderReadiness(provider.type, {
       apiKey: provider.apiKey,
       baseUrl: provider.baseUrl,
       model: provider.model,
     });
-    return readiness.ok
-      ? { ok: true, status: "ready", detail: `${provider.name} is configured for ${provider.model}` }
-      : { ok: false, status: "configuration_error", detail: readiness.detail };
+    if (!readiness.ok) {
+      return { ok: false, status: "configuration_error", detail: readiness.detail };
+    }
+    // For OpenAI-compatible providers (including claude with custom baseUrl), hit /models endpoint
+    if (provider.type !== "claude" || provider.baseUrl) {
+      const result = await fetchOpenAICompatibleModels(provider);
+      return { ok: result.ok, status: result.status, detail: result.detail };
+    }
+    // For Anthropic direct: send a minimal request to verify the API key
+    try {
+      const client = new ClaudeProvider({ apiKey: provider.apiKey!, model: provider.model });
+      await client.chat({ messages: [{ role: "user", content: "ping" }], maxTokens: 1 });
+      return { ok: true, status: "ready", detail: `${provider.name} API key is valid` };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isAuthError = /401|403|invalid.*key|auth/i.test(message);
+      return {
+        ok: false,
+        status: isAuthError ? "auth_error" : "request_failed",
+        detail: isAuthError ? "Invalid API key" : message,
+      };
+    }
   }
 
   async listProviderModels(id: string): Promise<ProviderModelsResult | null> {
@@ -849,6 +918,8 @@ export class AppRuntime {
           pending.resolve(false);
         }
       }
+      for (const key of this.runToolCallKeys) this.pendingToolCalls.delete(key);
+      this.runToolCallKeys.clear();
     }
   }
 
@@ -879,7 +950,8 @@ export class AppRuntime {
     sourceEventId: number,
   ): AppEvent | null {
     if (event.kind === "tool_call") {
-      const key = String(event.id ?? "agent");
+      const callId = toolCallId(event);
+      const key = callId ? `${String(event.id ?? "agent")}:${callId}` : String(event.id ?? "agent");
       const calls = this.pendingToolCalls.get(key) ?? [];
       const args = event.args;
       calls.push({
@@ -890,15 +962,17 @@ export class AppRuntime {
           : undefined,
       });
       this.pendingToolCalls.set(key, calls.slice(-20));
+      this.runToolCallKeys.add(key);
       return null;
     }
     if (event.kind !== "tool_result") return null;
-    const key = String(event.id ?? "agent");
+    const callId = toolCallId(event);
+    const key = callId ? `${String(event.id ?? "agent")}:${callId}` : String(event.id ?? "agent");
     const calls = this.pendingToolCalls.get(key) ?? [];
     const index = calls.findIndex((call) => call.name === event.name);
     const [call] = index >= 0 ? calls.splice(index, 1) : [];
     if (calls.length > 0) this.pendingToolCalls.set(key, calls);
-    else this.pendingToolCalls.delete(key);
+    else { this.pendingToolCalls.delete(key); this.runToolCallKeys.delete(key); }
     if (!call || !isObject(call.args)) return null;
 
     const artifactInput = artifactInputFromToolResult(
@@ -970,6 +1044,8 @@ export function createRuntimeFromEnv(env: NodeJS.ProcessEnv = process.env) {
   const store = new WorkspaceStore();
   const tools = new ToolRegistry();
   for (const tool of builtInFileTools) tools.register(tool);
+  for (const tool of builtInDocumentTools) tools.register(tool);
+  for (const tool of builtInShellTools) tools.register(tool);
   for (const workspace of store.listWorkspaces()) acl.grantFolder(workspace);
 
   const resourceRoot = env.COWORK_RESOURCE_DIR ?? process.cwd();
@@ -1004,10 +1080,10 @@ export function createRuntimeFromEnv(env: NodeJS.ProcessEnv = process.env) {
 }
 
 function seedEnvProviderProfile(store: WorkspaceStore, env: NodeJS.ProcessEnv, provider: string) {
-  if (store.listProviderProfiles().length > 0) return;
-
   const profile = envProviderProfileInput(env, provider);
   if (!profile) return;
+  // Skip only when an env-seeded or enabled profile already exists; a DB full of disabled profiles should get re-seeded
+  if (store.listProviderProfiles().some((p) => p.name === profile.name || p.enabled)) return;
   store.createProviderProfile({ ...profile, enabled: true, isDefault: true });
 }
 
@@ -1216,8 +1292,12 @@ function inferMimeType(filePath: string) {
     ".js": "text/javascript",
     ".json": "application/json",
     ".md": "text/markdown",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pdf": "application/pdf",
     ".png": "image/png",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".svg": "image/svg+xml",
     ".ts": "text/typescript",
     ".tsx": "text/typescript",
@@ -1281,6 +1361,16 @@ function isImagePreview(artifact: StoredArtifact) {
   return ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(artifact.mimeType);
 }
 
+function isDocumentPreview(artifact: StoredArtifact) {
+  return [
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+  ].includes(artifact.mimeType);
+}
+
 function validateProviderReadiness(
   type: ProviderType,
   cfg: { apiKey: string | null; baseUrl: string | null; model: string },
@@ -1300,4 +1390,12 @@ function validateProviderReadiness(
   return cfg.apiKey
     ? { ok: true, detail: "OpenAI-compatible provider is configured" }
     : { ok: false, detail: "API key is required" };
+}
+
+
+function toolCallId(event: AppEvent): string | null {
+  const ev = event as Record<string, unknown>;
+  if (typeof ev.callId === "string") return ev.callId;
+  if (typeof ev.toolCallId === "string") return ev.toolCallId;
+  return null;
 }

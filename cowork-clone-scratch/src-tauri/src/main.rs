@@ -87,8 +87,15 @@ fn spawn_sidecar(
     let http_url = format!("http://127.0.0.1:{http_port}");
     let project_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent();
     let mut command = if cfg!(debug_assertions) {
-        let npm = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
-        let mut command = Command::new(npm);
+        let npm = if cfg!(target_os = "windows") {
+            "npm.cmd".to_string()
+        } else {
+            std::env::var("npm_execpath")
+                .ok()
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| "npm".to_string())
+        };
+        let mut command = Command::new(&npm);
         command.args(["--silent", "run", "sidecar"]);
         if let Some(directory) = project_dir {
             command.current_dir(directory);
@@ -270,6 +277,8 @@ async fn run(
     workspace: Option<String>,
     run_id: String,
     conversation_id: Option<String>,
+    provider_profile_id: Option<String>,
+    model: Option<String>,
 ) -> RpcResult {
     call_sidecar_async(
         state,
@@ -280,6 +289,8 @@ async fn run(
             "workspace": workspace,
             "runId": run_id,
             "conversationId": conversation_id,
+            "providerProfileId": provider_profile_id,
+            "model": model,
         }),
     )
     .await

@@ -109,6 +109,7 @@ export class WorkspaceStore {
     if (target !== ":memory:") fs.mkdirSync(path.dirname(target), { recursive: true });
     this.db = new Database(target);
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("wal_autocheckpoint = 100"); // checkpoint every ~100 pages (~400KB)
     this.init();
   }
 

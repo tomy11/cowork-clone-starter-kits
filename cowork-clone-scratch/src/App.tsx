@@ -37,7 +37,12 @@ export default function App() {
 
   useEffect(() => {
     async function initialize() {
-      const bootstrap = await invoke<SidecarBootstrap>("spawn_sidecar");
+      const isTauri = "__TAURI_INTERNALS__" in window;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const devUrl = !isTauri && ((import.meta as any).env?.VITE_SIDECAR_URL as string | undefined);
+      const bootstrap = devUrl
+        ? { httpUrl: devUrl }
+        : await invoke<SidecarBootstrap>("spawn_sidecar");
       const api = new LocalApiClient(bootstrap.httpUrl);
       await api.waitForHealth();
       setLocalApi(api);

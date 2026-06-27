@@ -427,7 +427,7 @@ export function ProviderSettings({
             )}
 
             {activeTab === "extensions" && (
-              <ExtensionsPanel extensions={extensions} onRefresh={onRefreshExtensions} />
+              <ExtensionsPanel extensions={extensions} localApi={localApi} onRefresh={onRefreshExtensions} />
             )}
           </section>
         </div>
@@ -562,7 +562,28 @@ function McpPanel({
   );
 }
 
-function ExtensionsPanel({ extensions, onRefresh }: { extensions: ExtensionSummary[]; onRefresh: () => void }) {
+function ExtensionsPanel({
+  extensions,
+  localApi,
+  onRefresh,
+}: {
+  extensions: ExtensionSummary[];
+  localApi: LocalApiClient | null;
+  onRefresh: () => void;
+}) {
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+
+  async function toggleExtension(extension: ExtensionSummary) {
+    if (!localApi || togglingId) return;
+    setTogglingId(extension.id);
+    try {
+      await localApi.setExtensionEnabled(extension.id, !extension.enabled);
+      onRefresh();
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
   return (
     <div className="settings-surface">
       <div className="settings-surface-header">
@@ -588,7 +609,20 @@ function ExtensionsPanel({ extensions, onRefresh }: { extensions: ExtensionSumma
                 )}
                 {extension.setup.missingEnv.length > 0 && <em>{extension.setup.missingEnv.join(", ")}</em>}
               </div>
-              <small>{formatExtensionStatus(extension.status)}</small>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <small>{formatExtensionStatus(extension.status)}</small>
+                {localApi && (
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    style={{ fontSize: "12px", padding: "2px 8px" }}
+                    disabled={togglingId === extension.id}
+                    onClick={() => void toggleExtension(extension)}
+                  >
+                    {extension.enabled ? "Disable" : "Enable"}
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </div>
