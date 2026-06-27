@@ -998,8 +998,53 @@ export function createRuntimeFromEnv(env: NodeJS.ProcessEnv = process.env) {
     });
     fallbackProvider = { providerProfileId: null, providerName: "OpenAI-compatible env", providerType: "env", model };
   }
+  seedEnvProviderProfile(store, env, provider);
 
   return new AppRuntime({ llm, fallbackProvider, acl, audit, store, tools, skills, extensions, mcp });
+}
+
+function seedEnvProviderProfile(store: WorkspaceStore, env: NodeJS.ProcessEnv, provider: string) {
+  if (store.listProviderProfiles().length > 0) return;
+
+  const profile = envProviderProfileInput(env, provider);
+  if (!profile) return;
+  store.createProviderProfile({ ...profile, enabled: true, isDefault: true });
+}
+
+function envProviderProfileInput(env: NodeJS.ProcessEnv, provider: string): ProviderProfileInput | null {
+  if (provider === "claude") {
+    const model = env.CLAUDE_MODEL ?? "claude-sonnet-4-5";
+    return {
+      type: "claude",
+      name: "Claude env",
+      model,
+      apiKey: env.ANTHROPIC_API_KEY ?? null,
+    };
+  }
+
+  if (provider === "mock" && env.NODE_ENV === "test") {
+    return {
+      type: "mock",
+      name: "Mock env",
+      model: "mock",
+    };
+  }
+
+  const type: ProviderType = provider === "ollama" ? "ollama" : "openai-compatible";
+  const model = env.LLM_MODEL ?? (type === "ollama" ? "llama3.2" : "gpt-4o");
+  const baseUrl = env.LLM_BASE_URL ?? (type === "ollama" ? "http://localhost:11434/v1" : null);
+  const name = baseUrl?.includes("deepseek")
+    ? "DeepSeek env"
+    : type === "ollama"
+      ? "Ollama env"
+      : "OpenAI-compatible env";
+  return {
+    type,
+    name,
+    model,
+    baseUrl,
+    apiKey: env.LLM_API_KEY ?? null,
+  };
 }
 
 function createLLMFromProviderProfile(profile: ProviderProfileSecret, model: string): LLMProvider {

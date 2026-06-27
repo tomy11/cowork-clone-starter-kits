@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { useRef, useState } from "react";
 import { Icon, type IconName } from "./Icon";
 import type { SettingsTab } from "./ProviderSettings";
 import type { ExtensionSummary, LocalApiClient, McpServerSummary, SessionSummary, SkillSummary } from "../lib/local-api";
@@ -16,22 +15,18 @@ type Props = {
   localApi: LocalApiClient | null;
   onSelectFolder: (folder: string | null) => void;
   onSelectSession: (sessionId: string | null) => void;
-  onFoldersChange: (folders: string[]) => void;
   onSessionsChange: (sessions: SessionSummary[]) => void;
   onRefreshSessions: () => void;
   onRefreshExtensions: () => void;
   onNewTask: () => void;
-  onFocusSearch: () => void;
   onFocusAssets: () => void;
   onOpenSettingsTab: (tab: SettingsTab) => void;
+  onGrantWorkspace: () => void;
+  onToggleTerminal: () => void;
+  terminalOpen: boolean;
 };
 
-const primaryNav: Array<{ label: string; icon: IconName; action: "search" | "skills" | "scheduled" | "assets" }> = [
-  { label: "Search", icon: "search", action: "search" },
-  { label: "Skills", icon: "book", action: "skills" },
-  { label: "Scheduled", icon: "clock", action: "scheduled" },
-  { label: "Assets", icon: "folder", action: "assets" },
-];
+type NavAction = "sessions" | "files" | "skills" | "extensions";
 
 export function Sidebar({
   grantedFolders,
@@ -45,43 +40,35 @@ export function Sidebar({
   localApi,
   onSelectFolder,
   onSelectSession,
-  onFoldersChange,
   onSessionsChange,
   onRefreshSessions,
   onRefreshExtensions,
   onNewTask,
-  onFocusSearch,
   onFocusAssets,
   onOpenSettingsTab,
+  onGrantWorkspace,
+  onToggleTerminal,
+  terminalOpen,
 }: Props) {
   const [collapsed, setCollapsed] = useState(false);
-  const [folders, setFolders] = useState(grantedFolders);
+  const sessionsRef = useRef<HTMLElement>(null);
 
-  useEffect(() => {
-    setFolders(grantedFolders);
-  }, [grantedFolders]);
-
-  async function pickFolder() {
-    const selected = await open({ directory: true, multiple: false });
-    if (typeof selected !== "string") return;
-    if (!localApi) throw new Error("Local API is not ready");
-
-    await localApi.grantWorkspace(selected);
-    const nextFolders = folders.includes(selected) ? folders : [...folders, selected];
-    setFolders(nextFolders);
-    onFoldersChange(nextFolders);
-    onSelectFolder(selected);
-  }
+  const navItems: Array<{ label: string; icon: IconName; action: NavAction }> = [
+    { label: "Sessions", icon: "document", action: "sessions" },
+    ...(selectedSessionId ? [{ label: "Files", icon: "folder" as IconName, action: "files" as NavAction }] : []),
+    { label: "Skills", icon: "book", action: "skills" },
+    { label: "Extensions", icon: "code", action: "extensions" },
+  ];
 
   function newTask() {
     onNewTask();
   }
 
-  function runNavAction(action: "search" | "skills" | "scheduled" | "assets") {
-    if (action === "search") onFocusSearch();
+  function runNavAction(action: NavAction) {
+    if (action === "sessions") sessionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    else if (action === "files") onFocusAssets();
     else if (action === "skills") onOpenSettingsTab("skills");
-    else if (action === "scheduled") onOpenSettingsTab("mcp");
-    else onFocusAssets();
+    else if (action === "extensions") onOpenSettingsTab("extensions");
   }
 
   async function renameSession(session: SessionSummary) {
@@ -135,7 +122,7 @@ export function Sidebar({
             <Icon name="plusCircle" size={18} />
             <span>New task</span>
           </button>
-          {primaryNav.map((item) => (
+          {navItems.map((item) => (
             <button className="nav-item" type="button" key={item.label} onClick={() => runNavAction(item.action)}>
               <Icon name={item.icon} size={18} />
               <span>{item.label}</span>
@@ -146,17 +133,17 @@ export function Sidebar({
         <section className="sidebar-section">
           <div className="section-heading">
             <span>Workspaces</span>
-            <button type="button" aria-label="Add workspace" onClick={pickFolder}>
+            <button type="button" aria-label="Add workspace" onClick={onGrantWorkspace}>
               <Icon name="plus" size={15} />
             </button>
           </div>
-          {folders.length === 0 ? (
-            <button className="empty-workspace" type="button" onClick={pickFolder}>
-              Grant your first folder
+          {grantedFolders.length === 0 ? (
+            <button className="empty-workspace" type="button" onClick={onGrantWorkspace}>
+              Grant workspace
             </button>
           ) : (
             <div className="sidebar-list">
-              {folders.map((folder) => (
+              {grantedFolders.map((folder) => (
                 <button
                   className={`sidebar-list-item${folder === selectedFolder ? " is-selected" : ""}`}
                   type="button"
@@ -173,16 +160,7 @@ export function Sidebar({
           )}
         </section>
 
-        <section className="sidebar-section">
-          <div className="section-heading"><span>Agent team</span></div>
-          <div className="sidebar-list">
-            <div className="agent-row"><span className="agent-avatar agent-avatar--green">G</span><span>General</span></div>
-            <div className="agent-row"><span className="agent-avatar agent-avatar--red">C</span><span>Coder</span></div>
-            <div className="agent-row"><span className="agent-avatar agent-avatar--yellow">V</span><span>Verifier</span></div>
-          </div>
-        </section>
-
-        <section className="sidebar-section">
+        <section className="sidebar-section" ref={sessionsRef}>
           <div className="section-heading">
             <span>Sessions</span>
             <button type="button" aria-label="Refresh sessions" onClick={onRefreshSessions}>
@@ -269,13 +247,19 @@ export function Sidebar({
         )}
       </div>
 
-      <footer className="account-row">
-        <div className="account-avatar">PW</div>
-        <div className="account-copy">
-          <strong>Prachya Worachin</strong>
-          <span>Local workspace</span>
-        </div>
-        <Icon name="chevronDown" size={16} />
+      <footer className="account-row" aria-label="Workspace tools">
+        <button type="button" className="footer-action" title="Settings" onClick={() => onOpenSettingsTab("providers")}>
+          <Icon name="settings" size={16} />
+          <span>Settings</span>
+        </button>
+        <button type="button" className={`footer-action${terminalOpen ? " is-active" : ""}`} title="Terminal" onClick={onToggleTerminal}>
+          <Icon name="code" size={16} />
+          <span>Terminal</span>
+        </button>
+        <button type="button" className="footer-action" title="MCP" onClick={() => onOpenSettingsTab("mcp")}>
+          <Icon name="plug" size={16} />
+          <span>MCP</span>
+        </button>
       </footer>
     </aside>
   );

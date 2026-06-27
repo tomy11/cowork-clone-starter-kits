@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { Chat } from "./components/Chat";
 import { ProviderSettings, type SettingsTab } from "./components/ProviderSettings";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalDock } from "./components/TerminalDock";
-import { Icon } from "./components/Icon";
 import {
   LocalApiClient,
   type ExtensionSummary,
@@ -32,7 +32,6 @@ export default function App() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("providers");
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [chatKey, setChatKey] = useState(0);
-  const [focusInputKey, setFocusInputKey] = useState(0);
   const [focusFilesKey, setFocusFilesKey] = useState(0);
   const [resumeLatest, setResumeLatest] = useState(true);
 
@@ -134,6 +133,16 @@ export default function App() {
     setSettingsOpen(true);
   }
 
+  async function grantWorkspace() {
+    const selected = await open({ directory: true, multiple: false });
+    if (typeof selected !== "string") return;
+    if (!localApi) throw new Error("Local API is not ready");
+
+    await localApi.grantWorkspace(selected);
+    setGrantedFolders((current) => current.includes(selected) ? current : [...current, selected]);
+    selectFolder(selected);
+  }
+
   return (
     <div className="app-shell">
       <Sidebar
@@ -148,14 +157,15 @@ export default function App() {
         localApi={localApi}
         onSelectFolder={selectFolder}
         onSelectSession={selectSession}
-        onFoldersChange={setGrantedFolders}
         onSessionsChange={setSessions}
         onRefreshSessions={() => void refreshSessions()}
         onRefreshExtensions={() => void refreshExtensions()}
         onNewTask={startNewTask}
-        onFocusSearch={() => setFocusInputKey((key) => key + 1)}
         onFocusAssets={() => setFocusFilesKey((key) => key + 1)}
         onOpenSettingsTab={openSettings}
+        onGrantWorkspace={() => void grantWorkspace()}
+        onToggleTerminal={() => setTerminalOpen((open) => !open)}
+        terminalOpen={terminalOpen}
       />
 
       <main className="workspace">
@@ -170,27 +180,6 @@ export default function App() {
               <span>Select a workspace to begin</span>
             )}
           </div>
-          <div className="topbar-actions">
-            <button className="icon-button" aria-label="Task notes" title="Task notes">
-              <Icon name="document" size={17} />
-            </button>
-            <button
-              className={`icon-button${terminalOpen ? " is-active" : ""}`}
-              type="button"
-              aria-label="Toggle terminal"
-              title="Terminal"
-              onClick={() => setTerminalOpen((open) => !open)}
-            >
-              <Icon name="code" size={17} />
-            </button>
-            <button className="icon-button" type="button" aria-label="Provider settings" title="Provider settings" onClick={() => openSettings("providers")}>
-              <Icon name="settings" size={17} />
-            </button>
-            <button className="download-button" type="button">
-              <Icon name="download" size={17} />
-              Export
-            </button>
-          </div>
         </header>
 
         <Chat
@@ -199,11 +188,12 @@ export default function App() {
           sessionId={selectedSessionId}
           resumeLatest={resumeLatest}
           localApi={localApi}
-          focusInputKey={focusInputKey}
           focusFilesKey={focusFilesKey}
           providers={providers}
           selectedProviderId={selectedProviderId}
           onSelectProvider={setSelectedProviderId}
+          onGrantWorkspace={() => void grantWorkspace()}
+          onOpenProviderSettings={() => openSettings("providers")}
           onSessionCreated={(session) => {
             setSelectedSessionId(session.id);
             void localApi?.setActiveSession(session.workspace, session.id);

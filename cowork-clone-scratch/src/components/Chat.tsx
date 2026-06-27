@@ -33,31 +33,26 @@ type Props = {
   sessionId: string | null;
   resumeLatest: boolean;
   localApi: LocalApiClient | null;
-  focusInputKey?: number;
   focusFilesKey?: number;
   providers: ProviderProfile[];
   selectedProviderId: string | null;
   onSelectProvider: (providerId: string | null) => void;
+  onGrantWorkspace: () => void;
+  onOpenProviderSettings: () => void;
   onSessionCreated?: (session: SessionSummary) => void;
 };
-
-const quickActions: Array<{ label: string; icon: IconName; prompt: string }> = [
-  { label: "Document", icon: "document", prompt: "ช่วยสร้างเอกสารสรุปจากไฟล์ใน workspace นี้" },
-  { label: "Website", icon: "code", prompt: "ช่วยวิเคราะห์และพัฒนาเว็บไซต์ใน workspace นี้" },
-  { label: "Image", icon: "image", prompt: "ช่วยวางแผนและเตรียมภาพประกอบสำหรับโปรเจกต์นี้" },
-  { label: "Spreadsheet", icon: "spreadsheet", prompt: "ช่วยวิเคราะห์ข้อมูลตารางใน workspace นี้" },
-];
 
 export function Chat({
   folder,
   sessionId,
   resumeLatest,
   localApi,
-  focusInputKey = 0,
   focusFilesKey = 0,
   providers,
   selectedProviderId,
   onSelectProvider,
+  onGrantWorkspace,
+  onOpenProviderSettings,
   onSessionCreated,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -70,7 +65,6 @@ export function Chat({
   const [artifactPreview, setArtifactPreview] = useState<ArtifactPreviewResult | null>(null);
   const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const filesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -78,7 +72,7 @@ export function Chat({
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const hasConversation = messages.length > 0 || Boolean(conversationId);
-  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? null;
+  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId && provider.enabled) ?? null;
 
   useEffect(() => {
     let disposed = false;
@@ -160,10 +154,6 @@ export function Chat({
   useEffect(() => {
     inputRef.current?.focus();
   }, [folder]);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, [focusInputKey]);
 
   useEffect(() => {
     if (filesRef.current) {
@@ -295,14 +285,15 @@ export function Chat({
     }
   }
 
-  async function send() {
-    const content = input.trim();
+  async function send(contentOverride?: string) {
+    const content = (contentOverride ?? input).trim();
     if (!content || running || !folder) return;
+    const isRetry = contentOverride !== undefined;
 
     const runId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
     activeRunId.current = runId;
     setMessages((current) => [...current, { role: "user", content }]);
-    setInput("");
+    if (!isRetry) setInput("");
     setRunning(true);
     setEvents([]);
     setAgents({});
@@ -320,6 +311,19 @@ export function Chat({
       setRunning(false);
       setConfirmation(null);
     }
+  }
+
+  async function copyMessage(content: string) {
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch (error) {
+      console.error("Unable to copy message", error);
+    }
+  }
+
+  function editMessage(content: string) {
+    setInput(content);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
   }
 
   async function cancelRun() {
@@ -406,11 +410,6 @@ export function Chat({
     }
   }
 
-  function chooseQuickAction(prompt: string) {
-    setInput(prompt);
-    inputRef.current?.focus();
-  }
-
   function resizeInput(event: React.FormEvent<HTMLTextAreaElement>) {
     const textarea = event.currentTarget;
     textarea.style.height = "auto";
@@ -420,16 +419,18 @@ export function Chat({
   const agentList = Object.values(agents);
 
   return (
-    <div
-      className={`chat-layout${hasConversation ? " chat-layout--active" : ""}`}
-      onDragEnter={() => setDragging(true)}
-      onDragOver={(event) => event.preventDefault()}
-      onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
-      onDrop={(event) => { event.preventDefault(); setDragging(false); }}
-    >
-      {dragging && <div className="drop-overlay">Drop files to add context</div>}
-
-      {!hasConversation ? (
+    <div className={`chat-layout${hasConversation ? " chat-layout--active" : ""}`}>
+      {!folder ? (
+        <section className="welcome-panel welcome-panel--workspace">
+          <div className="welcome-kicker">WORKSPACE REQUIRED</div>
+          <h1>Select a workspace</h1>
+          <p>Grant a local folder so Cowork can create sessions, read files, and keep artifacts in one place.</p>
+          <button className="workspace-cta" type="button" onClick={onGrantWorkspace}>
+            <Icon name="folder" size={17} />
+            Grant workspace
+          </button>
+        </section>
+      ) : !hasConversation ? (
         <section className="welcome-panel">
           <div className="welcome-kicker">YOUR AI WORKSPACE</div>
           <h1>What can we work on?</h1>
@@ -439,15 +440,8 @@ export function Chat({
             providers={providers} selectedProviderId={selectedProviderId} onSelectProvider={onSelectProvider}
             onChange={setInput} onInput={resizeInput} onKeyDown={handleKeyDown}
             onSend={send} onCancel={cancelRun}
+            onOpenProviderSettings={onOpenProviderSettings}
           />
-          <div className="quick-actions" aria-label="Quick actions">
-            {quickActions.map((action) => (
-              <button type="button" key={action.label} onClick={() => chooseQuickAction(action.prompt)}>
-                <Icon name={action.icon} size={17} />{action.label}
-              </button>
-            ))}
-            <button type="button" onClick={() => inputRef.current?.focus()}>More</button>
-          </div>
         </section>
       ) : (
         <>
@@ -485,7 +479,19 @@ export function Chat({
                   {message.role === "assistant" && <div className="message-avatar">C</div>}
                   <div className="message-content">
                     <span>{message.role === "user" ? "You" : "Cowork"}</span>
-                    <p>{message.content}</p>
+                    {message.role === "assistant" ? (
+                      <MarkdownMessage content={message.content} />
+                    ) : (
+                      <>
+                        <p>{message.content}</p>
+                        <MessageActions
+                          disabled={running}
+                          onCopy={() => void copyMessage(message.content)}
+                          onEdit={() => editMessage(message.content)}
+                          onRetry={() => void send(message.content)}
+                        />
+                      </>
+                    )}
                   </div>
                 </article>
               ))}
@@ -494,7 +500,7 @@ export function Chat({
               {events.length > 0 && (
                 <details className="event-details">
                   <summary>View task activity ({events.length})</summary>
-                  <pre>{JSON.stringify(events, null, 2)}</pre>
+                  <ActivityTimeline events={events} />
                 </details>
               )}
             </div>
@@ -505,6 +511,7 @@ export function Chat({
               providers={providers} selectedProviderId={selectedProviderId} onSelectProvider={onSelectProvider}
               onChange={setInput} onInput={resizeInput} onKeyDown={handleKeyDown}
               onSend={send} onCancel={cancelRun}
+              onOpenProviderSettings={onOpenProviderSettings}
             />
           </div>
         </>
@@ -523,6 +530,584 @@ export function Chat({
     if (!isArtifactEvent(event)) return;
     setArtifacts((current) => upsertArtifact(current, event.artifact));
   }
+}
+
+function MessageActions({
+  disabled,
+  onCopy,
+  onEdit,
+  onRetry,
+}: {
+  disabled: boolean;
+  onCopy: () => void;
+  onEdit: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="message-actions" aria-label="Message actions">
+      <button type="button" title="Copy" aria-label="Copy message" disabled={disabled} onClick={onCopy}>
+        <Icon name="copy" size={13} />
+      </button>
+      <button type="button" title="Edit" aria-label="Edit message" disabled={disabled} onClick={onEdit}>
+        <Icon name="edit" size={13} />
+      </button>
+      <button type="button" title="Retry" aria-label="Retry message" disabled={disabled} onClick={onRetry}>
+        <Icon name="refresh" size={13} />
+      </button>
+    </div>
+  );
+}
+
+type ActivityTone = "info" | "running" | "done" | "warning" | "error";
+type ActivityCategory = "all" | "tools" | "files" | "permissions" | "errors";
+type ActivityItem = {
+  title: string;
+  detail?: string;
+  meta?: string;
+  chip?: string;
+  icon: IconName;
+  category: ActivityCategory;
+  raw?: AgentEvent[];
+  tone: ActivityTone;
+};
+
+function ActivityTimeline({ events }: { events: AgentEvent[] }) {
+  const [filter, setFilter] = useState<ActivityCategory>("all");
+  const items = compactActivityItems(events);
+  const summary = summarizeActivity(events, items);
+  const visibleItems = filter === "all" ? items : items.filter((item) => item.category === filter);
+  return (
+    <div className="activity-panel">
+      <div className="activity-summary">
+        <strong>Activity</strong>
+        <span>{summary}</span>
+      </div>
+      <div className="activity-filters" aria-label="Activity filters">
+        {(["all", "tools", "files", "permissions", "errors"] as ActivityCategory[]).map((item) => (
+          <button
+            type="button"
+            key={item}
+            className={filter === item ? "is-selected" : ""}
+            onClick={() => setFilter(item)}
+          >
+            {activityFilterLabel(item)}
+          </button>
+        ))}
+      </div>
+      <div className="activity-timeline">
+        {visibleItems.map((item, index) => (
+          <details className={`activity-row activity-row--${item.tone}`} key={`${item.title}-${index}`}>
+            <summary>
+              <i><Icon name={item.icon} size={11} /></i>
+              <div>
+                <strong>{item.title}</strong>
+                {item.detail && <span>{item.detail}</span>}
+              </div>
+              <div className="activity-row-meta">
+                {item.chip && <em>{item.chip}</em>}
+                {item.meta && <small>{item.meta}</small>}
+              </div>
+            </summary>
+            {item.raw && item.raw.length > 0 && (
+              <pre>{JSON.stringify(item.raw.length === 1 ? item.raw[0] : item.raw, null, 2)}</pre>
+            )}
+          </details>
+        ))}
+        {visibleItems.length === 0 && <p className="activity-empty">No activity in this filter</p>}
+      </div>
+    </div>
+  );
+}
+
+function compactActivityItems(events: AgentEvent[]) {
+  const items: ActivityItem[] = [];
+  const pendingToolCalls = new Map<string, AgentEvent>();
+
+  for (const event of events) {
+    if (event.kind === "tool_call") {
+      pendingToolCalls.set(toolEventKey(event), event);
+      continue;
+    }
+    if (event.kind === "tool_result") {
+      const key = toolEventKey(event);
+      const call = pendingToolCalls.get(key);
+      if (call) pendingToolCalls.delete(key);
+      items.push(toolActivityItem(event, call));
+      continue;
+    }
+    const item = activityFromEvent(event);
+    if (item) items.push(item);
+  }
+
+  for (const call of pendingToolCalls.values()) {
+    const item = activityFromEvent(call);
+    if (item) items.push(item);
+  }
+
+  return items;
+}
+
+function summarizeActivity(events: AgentEvent[], items: ActivityItem[]) {
+  const tools = items.filter((item) => item.category === "tools").length;
+  const files = items.filter((item) => item.category === "files").length;
+  const permissions = items.filter((item) => item.category === "permissions").length;
+  const errors = items.filter((item) => item.category === "errors").length;
+  return compactParts([
+    `${events.length} events`,
+    tools ? `${tools} tools` : undefined,
+    files ? `${files} files` : undefined,
+    permissions ? `${permissions} permissions` : undefined,
+    errors ? `${errors} errors` : undefined,
+  ]);
+}
+
+function activityFilterLabel(filter: ActivityCategory) {
+  if (filter === "all") return "All";
+  if (filter === "tools") return "Tools";
+  if (filter === "files") return "Files";
+  if (filter === "permissions") return "Permissions";
+  return "Errors";
+}
+
+function toolEventKey(event: AgentEvent) {
+  return `${stringValue(event.id) ?? "agent"}:${stringValue(event.name) ?? "tool"}`;
+}
+
+function toolActivityItem(result: AgentEvent, call?: AgentEvent): ActivityItem {
+  const name = stringValue(result.name) ?? stringValue(call?.name) ?? "tool";
+  return {
+    title: `${name} completed`,
+    detail: summarizeToolPayload(result.result) ?? summarizeToolPayload(call?.args),
+    meta: stringValue(result.id),
+    chip: "tool",
+    icon: "code",
+    category: "tools",
+    tone: "done",
+    raw: call ? [call, result] : [result],
+  };
+}
+
+function activityFromEvent(event: AgentEvent): ActivityItem | null {
+  if (event.kind === "run_started") {
+    return {
+      title: "Run started",
+      detail: compactParts([stringValue(event.providerName), stringValue(event.model)]),
+      chip: "run",
+      icon: "arrowUp",
+      category: "all",
+      raw: [event],
+      tone: "running",
+    };
+  }
+  if (event.kind === "mcp_status") {
+    const servers = Array.isArray(event.servers) ? event.servers : [];
+    const connected = servers.filter((server) => isRecord(server) && server.connected === true).length;
+    return {
+      title: "MCP checked",
+      detail: servers.length > 0 ? `${connected}/${servers.length} servers connected` : "No MCP servers connected",
+      chip: "mcp",
+      icon: "plug",
+      category: "all",
+      raw: [event],
+      tone: connected > 0 ? "done" : "info",
+    };
+  }
+  if (event.kind === "thinking") {
+    return null;
+  }
+  if (event.kind === "plan") {
+    const steps = Array.isArray(event.steps) ? event.steps : [];
+    return { title: "Plan created", detail: `${steps.length} step${steps.length === 1 ? "" : "s"}`, chip: "plan", icon: "document", category: "all", tone: "done", raw: [event] };
+  }
+  if (event.kind === "subagent_spawned") {
+    return { title: "Agent started", detail: stringValue(event.task), meta: stringValue(event.id), chip: "agent", icon: "team", category: "all", tone: "running", raw: [event] };
+  }
+  if (event.kind === "subagent_progress") {
+    return null;
+  }
+  if (event.kind === "subagent_done") {
+    const result = isRecord(event.result) ? event.result : {};
+    const success = result.success !== false;
+    return {
+      title: success ? "Agent completed" : "Agent failed",
+      detail: summarizeUnknown(result.summary ?? result.error ?? result),
+      meta: stringValue(event.id),
+      chip: "agent",
+      icon: "team",
+      category: success ? "all" : "errors",
+      tone: success ? "done" : "error",
+      raw: [event],
+    };
+  }
+  if (event.kind === "skill_activated") {
+    return { title: "Skill loaded", detail: stringValue(event.skill), meta: stringValue(event.id), chip: "skill", icon: "book", category: "all", tone: "done", raw: [event] };
+  }
+  if (event.kind === "tool_call") {
+    return {
+      title: `Using ${stringValue(event.name) ?? "tool"}`,
+      detail: summarizeToolPayload(event.args),
+      meta: stringValue(event.id),
+      chip: "tool",
+      icon: "code",
+      category: "tools",
+      tone: "running",
+      raw: [event],
+    };
+  }
+  if (event.kind === "confirmation_requested") {
+    return {
+      title: "Permission requested",
+      detail: compactParts([stringValue(event.tool), stringValue(event.prompt)]),
+      meta: stringValue(event.agentId),
+      chip: "permission",
+      icon: "shield",
+      category: "permissions",
+      tone: "warning",
+      raw: [event],
+    };
+  }
+  if (event.kind === "confirmation_resolved") {
+    return {
+      title: event.approved ? "Permission approved" : "Permission denied",
+      meta: stringValue(event.confirmationId),
+      chip: "permission",
+      icon: "shield",
+      category: "permissions",
+      tone: event.approved ? "done" : "warning",
+      raw: [event],
+    };
+  }
+  if (isArtifactEvent(event)) {
+    return {
+      title: artifactActivityTitle(event.kind),
+      detail: `${event.artifact.name} - ${shortPath(event.artifact.path)}`,
+      meta: formatBytes(event.artifact.sizeBytes),
+      chip: "file",
+      icon: artifactActivityIcon(event.artifact),
+      category: "files",
+      tone: "done",
+      raw: [event],
+    };
+  }
+  if (event.kind === "final") {
+    return { title: "Final answer", detail: summarizeUnknown(event.content), chip: "final", icon: "document", category: "all", tone: "done", raw: [event] };
+  }
+  if (event.kind === "run_cancelled") {
+    return { title: "Run cancelled", meta: stringValue(event.runId), chip: "run", icon: "alert", category: "errors", tone: "warning", raw: [event] };
+  }
+  if (event.kind === "error") {
+    return { title: "Error", detail: stringValue(event.message), chip: "error", icon: "alert", category: "errors", tone: "error", raw: [event] };
+  }
+  return { title: humanizeEventKind(event.kind), detail: summarizeToolPayload(event), chip: "event", icon: "clock", category: "all", tone: "info", raw: [event] };
+}
+
+function artifactActivityTitle(kind: string) {
+  if (kind === "artifact_created") return "File created";
+  if (kind === "artifact_attached") return "File attached";
+  if (kind === "artifact_updated") return "File updated";
+  if (kind === "artifact_moved") return "File moved";
+  return "File event";
+}
+
+function artifactActivityIcon(artifact: ArtifactSummary): IconName {
+  return artifactIcon(artifact);
+}
+
+function summarizeToolPayload(value: unknown) {
+  if (!isRecord(value)) return summarizeUnknown(value);
+  const preferred = ["path", "previousPath", "targetPath", "filePath", "query", "pattern", "command", "workspace", "folder", "name"];
+  const parts = preferred
+    .filter((key) => typeof value[key] === "string" || typeof value[key] === "number" || typeof value[key] === "boolean")
+    .map((key) => `${key}: ${String(value[key])}`);
+  if (parts.length > 0) return truncateText(parts.join(" - "), 180);
+  return summarizeUnknown(value);
+}
+
+function summarizeUnknown(value: unknown) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return truncateText(value, 180);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return truncateText(JSON.stringify(value), 180);
+  } catch {
+    return String(value);
+  }
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function compactParts(parts: Array<string | undefined>) {
+  const compacted = parts.filter((part): part is string => Boolean(part));
+  return compacted.length > 0 ? truncateText(compacted.join(" - "), 180) : undefined;
+}
+
+function truncateText(value: string, maxLength: number) {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
+}
+
+function humanizeEventKind(kind: string) {
+  return kind
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+type MarkdownBlock =
+  | { kind: "code"; language: string; content: string }
+  | { kind: "heading"; level: 1 | 2 | 3 | 4; text: string }
+  | { kind: "paragraph"; lines: string[] }
+  | { kind: "table"; headers: string[]; rows: string[][] }
+  | { kind: "ul"; items: string[] }
+  | { kind: "ol"; items: string[] };
+
+function MarkdownMessage({ content }: { content: string }) {
+  const blocks = parseMarkdown(content);
+  return (
+    <div className="markdown-message">
+      {blocks.map((block, index) => renderMarkdownBlock(block, index))}
+    </div>
+  );
+}
+
+function parseMarkdown(content: string): MarkdownBlock[] {
+  const lines = normalizeInlineMarkdownTables(content.replace(/\r\n/g, "\n")).split("\n");
+  const blocks: MarkdownBlock[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    const fence = trimmed.match(/^```(\S*)\s*$/);
+    if (fence) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push({ kind: "code", language: fence[1] ?? "", content: codeLines.join("\n") });
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      blocks.push({
+        kind: "heading",
+        level: heading[1].length as 1 | 2 | 3 | 4,
+        text: heading[2].trim(),
+      });
+      index += 1;
+      continue;
+    }
+
+    const table = parseMarkdownTable(lines, index);
+    if (table) {
+      blocks.push(table.block);
+      index = table.nextIndex;
+      continue;
+    }
+
+    const unordered = trimmed.match(/^[-*]\s+(.+)$/);
+    if (unordered) {
+      const items: string[] = [];
+      while (index < lines.length) {
+        const match = lines[index].trim().match(/^[-*]\s+(.+)$/);
+        if (!match) break;
+        items.push(match[1]);
+        index += 1;
+      }
+      blocks.push({ kind: "ul", items });
+      continue;
+    }
+
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      const items: string[] = [];
+      while (index < lines.length) {
+        const match = lines[index].trim().match(/^\d+[.)]\s+(.+)$/);
+        if (!match) break;
+        items.push(match[1]);
+        index += 1;
+      }
+      blocks.push({ kind: "ol", items });
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (index < lines.length) {
+      const next = lines[index];
+      const nextTrimmed = next.trim();
+      if (
+        !nextTrimmed
+        || /^```/.test(nextTrimmed)
+        || /^#{1,4}\s+/.test(nextTrimmed)
+        || parseMarkdownTable(lines, index)
+        || /^[-*]\s+/.test(nextTrimmed)
+        || /^\d+[.)]\s+/.test(nextTrimmed)
+      ) break;
+      paragraphLines.push(nextTrimmed);
+      index += 1;
+    }
+    blocks.push({ kind: "paragraph", lines: paragraphLines });
+  }
+
+  return blocks;
+}
+
+function normalizeInlineMarkdownTables(content: string) {
+  return content
+    .split("\n")
+    .flatMap((line) => {
+      if (!looksLikeInlineTable(line)) return [line];
+      return splitInlineTableRows(line);
+    })
+    .join("\n");
+}
+
+function looksLikeInlineTable(line: string) {
+  const trimmed = line.trim();
+  return trimmed.includes("|") && /\|\s*:?-{3,}:?\s*\|/.test(trimmed) && (trimmed.match(/\|/g)?.length ?? 0) >= 8;
+}
+
+function splitInlineTableRows(line: string) {
+  const separated = line.replace(/\|\s+\|/g, "|\n|");
+  if (separated === line) return [line];
+
+  return separated.split("\n").flatMap((piece) => {
+    const trimmed = piece.trim();
+    if (!trimmed) return [];
+    const firstPipe = trimmed.indexOf("|");
+    const lastPipe = trimmed.lastIndexOf("|");
+    if (firstPipe < 0 || lastPipe <= firstPipe) return [trimmed];
+
+    const prefix = trimmed.slice(0, firstPipe).trim();
+    const row = trimmed.slice(firstPipe, lastPipe + 1).trim();
+    const suffix = trimmed.slice(lastPipe + 1).trim();
+    return [
+      ...(prefix ? [prefix] : []),
+      row,
+      ...(suffix ? [suffix] : []),
+    ];
+  });
+}
+
+function parseMarkdownTable(lines: string[], index: number): { block: MarkdownBlock; nextIndex: number } | null {
+  if (index + 1 >= lines.length) return null;
+  const header = parseTableRow(lines[index]);
+  const separator = parseTableRow(lines[index + 1]);
+  if (!header || !separator || !separator.every((cell) => /^:?-{3,}:?$/.test(cell.trim()))) return null;
+
+  const rows: string[][] = [];
+  let nextIndex = index + 2;
+  while (nextIndex < lines.length) {
+    const row = parseTableRow(lines[nextIndex]);
+    if (!row) break;
+    rows.push(padTableRow(row, header.length));
+    nextIndex += 1;
+  }
+
+  return {
+    block: { kind: "table", headers: header, rows },
+    nextIndex,
+  };
+}
+
+function parseTableRow(line: string) {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) return null;
+  return trimmed.slice(1, -1).split("|").map((cell) => cell.trim());
+}
+
+function padTableRow(row: string[], length: number) {
+  if (row.length >= length) return row.slice(0, length);
+  return [...row, ...Array.from({ length: length - row.length }, () => "")];
+}
+
+function renderMarkdownBlock(block: MarkdownBlock, index: number) {
+  if (block.kind === "code") {
+    return (
+      <div className="markdown-code" key={index}>
+        {block.language && <span>{block.language}</span>}
+        <pre><code>{block.content}</code></pre>
+      </div>
+    );
+  }
+  if (block.kind === "heading") {
+    const Tag = (`h${Math.min(block.level + 1, 4)}`) as "h2" | "h3" | "h4";
+    return <Tag key={index}>{renderInlineMarkdown(block.text)}</Tag>;
+  }
+  if (block.kind === "table") {
+    return (
+      <div className="markdown-table-wrap" key={index}>
+        <table>
+          <thead>
+            <tr>{block.headers.map((header, cellIndex) => <th key={cellIndex}>{renderInlineMarkdown(header)}</th>)}</tr>
+          </thead>
+          <tbody>
+            {block.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {row.map((cell, cellIndex) => <td key={cellIndex}>{renderInlineMarkdown(cell)}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+  if (block.kind === "ul") {
+    return (
+      <ul key={index}>
+        {block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInlineMarkdown(item)}</li>)}
+      </ul>
+    );
+  }
+  if (block.kind === "ol") {
+    return (
+      <ol key={index}>
+        {block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInlineMarkdown(item)}</li>)}
+      </ol>
+    );
+  }
+  return (
+    <p key={index}>
+      {block.lines.map((line, lineIndex) => (
+        <span key={lineIndex}>
+          {lineIndex > 0 && <br />}
+          {renderInlineMarkdown(line)}
+        </span>
+      ))}
+    </p>
+  );
+}
+
+function renderInlineMarkdown(text: string) {
+  const parts: Array<string | JSX.Element> = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+    const token = match[0];
+    if (token.startsWith("`")) {
+      parts.push(<code key={parts.length}>{token.slice(1, -1)}</code>);
+    } else {
+      parts.push(<strong key={parts.length}>{token.slice(2, -2)}</strong>);
+    }
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+  return parts;
 }
 
 function PermissionApprovalModal({
@@ -760,6 +1345,7 @@ type ComposerProps = {
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => Promise<void>;
   onCancel: () => Promise<void>;
+  onOpenProviderSettings: () => void;
 };
 
 function Composer({
@@ -775,39 +1361,44 @@ function Composer({
   onKeyDown,
   onSend,
   onCancel,
+  onOpenProviderSettings,
 }: ComposerProps) {
   const enabledProviders = providers.filter((provider) => provider.enabled);
+  const selectedEnabledProviderId = enabledProviders.some((provider) => provider.id === selectedProviderId)
+    ? selectedProviderId ?? ""
+    : "";
+  const defaultProvider = enabledProviders.find((provider) => provider.isDefault) ?? enabledProviders[0] ?? null;
   return (
     <div className={`composer${!folder ? " composer--disabled" : ""}`}>
       <textarea
         ref={inputRef} value={input} onChange={(event) => onChange(event.target.value)}
         onInput={onInput} onKeyDown={onKeyDown}
-        placeholder={folder ? "Describe a task or drop files here for a quick start" : "Grant a workspace from the sidebar to begin"}
+        placeholder={folder ? "Describe a task for this workspace" : "Grant a workspace to begin"}
         disabled={!folder || running} rows={2}
       />
       <div className="composer-toolbar">
-        <div className="composer-tools">
-          <button className="composer-icon" type="button" aria-label="Add workspace or file"><Icon name="plus" size={21} /></button>
-          <button className="team-selector" type="button"><Icon name="team" size={17} />Agent team</button>
-        </div>
         <div className="composer-settings">
-          <button type="button" className="thinking-mode"><Icon name="brain" size={17} />Thinking</button>
-          <span className="toolbar-separator" />
-          <label className="model-selector" aria-label="Model">
-            <select
-              value={selectedProviderId ?? ""}
-              disabled={enabledProviders.length === 0}
-              onChange={(event) => onSelectProvider(event.target.value || null)}
-            >
-              <option value="">Auto</option>
-              {enabledProviders.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.name} · {provider.model}
-                </option>
-              ))}
-            </select>
-            <Icon name="chevronDown" size={14} />
-          </label>
+          {enabledProviders.length === 0 ? (
+            <button type="button" className="provider-setup-button" title="Using the provider configured in .env" onClick={onOpenProviderSettings}>
+              <Icon name="settings" size={15} />
+              Env provider
+            </button>
+          ) : (
+            <label className="model-selector" aria-label="Model" title={selectedEnabledProviderId ? selectedModelTitle(enabledProviders, selectedEnabledProviderId) : defaultProvider ? `Default: ${defaultProvider.model} via ${defaultProvider.name}` : "Default model"}>
+              <select
+                value={selectedEnabledProviderId}
+                onChange={(event) => onSelectProvider(event.target.value || null)}
+              >
+                <option value="">{defaultProvider ? `${defaultProvider.model} (default)` : "Default model"}</option>
+                {enabledProviders.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.model} — {provider.name}
+                  </option>
+                ))}
+              </select>
+              <Icon name="chevronDown" size={14} />
+            </label>
+          )}
           <button
             type="button"
             className={`send-button${running ? " send-button--stop" : ""}`}
@@ -821,4 +1412,9 @@ function Composer({
       </div>
     </div>
   );
+}
+
+function selectedModelTitle(providers: ProviderProfile[], providerId: string) {
+  const provider = providers.find((item) => item.id === providerId);
+  return provider ? `${provider.model} via ${provider.name}` : "Selected model";
 }
