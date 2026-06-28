@@ -4,7 +4,6 @@ import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
 import { Icon, type IconName } from "./Icon";
 import type {
   AgentEvent,
@@ -36,7 +35,6 @@ type Props = {
   sessionId: string | null;
   resumeLatest: boolean;
   localApi: LocalApiClient | null;
-  focusFilesKey?: number;
   providers: ProviderProfile[];
   selectedProviderId: string | null;
   onSelectProvider: (providerId: string | null) => void;
@@ -50,7 +48,6 @@ export function Chat({
   sessionId,
   resumeLatest,
   localApi,
-  focusFilesKey = 0,
   providers,
   selectedProviderId,
   onSelectProvider,
@@ -69,13 +66,13 @@ export function Chat({
   const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const filesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const activeRunId = useRef<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const hasConversation = messages.length > 0 || Boolean(conversationId);
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId && provider.enabled) ?? null;
+  const visibleArtifacts = latestRunArtifacts(artifacts);
 
   useEffect(() => {
     let disposed = false;
@@ -142,19 +139,11 @@ export function Chat({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, events]);
+  }, [messages, events, artifacts]);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, [folder]);
-
-  useEffect(() => {
-    if (filesRef.current) {
-      filesRef.current.scrollIntoView({ block: "start", behavior: "smooth" });
-    } else {
-      inputRef.current?.focus();
-    }
-  }, [focusFilesKey]);
 
   function applyAgentEvent(event: AgentEvent) {
     if (event.kind === "plan" && Array.isArray(event.steps)) {
@@ -342,22 +331,6 @@ export function Chat({
     }
   }
 
-  async function attachFile() {
-    if (!localApi || !conversationId) return;
-    try {
-      const selected = await open({ multiple: false, directory: false });
-      const filePath = Array.isArray(selected) ? selected[0] : selected;
-      if (!filePath) return;
-      const artifact = await localApi.attachArtifact(conversationId, filePath);
-      setArtifacts((current) => upsertArtifact(current, artifact));
-    } catch (error) {
-      setMessages((current) => [
-        ...current,
-        { role: "assistant", content: `Unable to attach file: ${error instanceof Error ? error.message : String(error)}` },
-      ]);
-    }
-  }
-
   async function previewArtifact(artifact: ArtifactSummary) {
     if (!localApi) return;
     setPreviewLoadingId(artifact.id);
@@ -449,21 +422,6 @@ export function Chat({
                 </section>
               )}
 
-              {(artifacts.length > 0 || (conversationId && localApi)) && (
-                <div ref={filesRef}>
-                  <ArtifactPanel
-                    artifacts={artifacts}
-                    loadingPreviewId={previewLoadingId}
-                    previewId={artifactPreview?.artifact.id ?? null}
-                    onAttach={conversationId && localApi ? attachFile : undefined}
-                    onPreview={localApi ? previewArtifact : undefined}
-                    onOpen={openArtifact}
-                    onReveal={revealArtifact}
-                  />
-                </div>
-              )}
-              {artifactPreview && <ArtifactPreviewPanel result={artifactPreview} onClose={() => setArtifactPreview(null)} />}
-
               {messages.map((message, index) => (
                 <article className={`message message--${message.role}`} key={`${message.role}-${index}`}>
                   {message.role === "assistant" && <div className="message-avatar">C</div>}
@@ -485,6 +443,20 @@ export function Chat({
                   </div>
                 </article>
               ))}
+
+              {visibleArtifacts.length > 0 && (
+                <div>
+                  <ArtifactPanel
+                    artifacts={visibleArtifacts}
+                    loadingPreviewId={previewLoadingId}
+                    previewId={artifactPreview?.artifact.id ?? null}
+                    onPreview={localApi ? previewArtifact : undefined}
+                    onOpen={openArtifact}
+                    onReveal={revealArtifact}
+                  />
+                </div>
+              )}
+              {artifactPreview && <ArtifactPreviewPanel result={artifactPreview} onClose={() => setArtifactPreview(null)} />}
 
               {running && <div className="agent-working"><i /><i /><i /><span>Agent team is working</span></div>}
               {events.length > 0 && (
@@ -1133,7 +1105,7 @@ function PermissionApprovalModal({
   );
 }
 
-function ArtifactPanel({
+export function ArtifactPanel({
   artifacts,
   loadingPreviewId,
   previewId,
@@ -1168,11 +1140,11 @@ function ArtifactPanel({
           <div className="artifact-empty">No files attached yet</div>
         ) : (
           artifacts.map((artifact) => (
-            <div className={`artifact-row${previewId === artifact.id ? " artifact-row--selected" : ""}`} key={artifact.id} title={artifact.path}>
+            <div className={artifactRowClass(artifact, previewId)} key={artifact.id} title={artifact.path}>
               <div className="artifact-icon"><Icon name={artifactIcon(artifact)} size={16} /></div>
               <div>
                 <strong>{artifact.name}</strong>
-                <span>{artifactKindLabel(artifact)} · {formatBytes(artifact.sizeBytes)} · {shortPath(artifact.path)}</span>
+                <span>{artifactStatusLabel(artifact)} · {formatBytes(artifact.sizeBytes)} · {shortPath(artifact.path)}</span>
               </div>
               <small>{artifact.fileType}</small>
               <div className="artifact-row-actions">
@@ -1187,12 +1159,12 @@ function ArtifactPanel({
                   </button>
                 )}
                 {onOpen && (
-                  <button type="button" aria-label={`Open ${artifact.name}`} onClick={() => void onOpen(artifact)}>
+                  <button type="button" aria-label={`Open ${artifact.name}`} disabled={artifact.exists === false} onClick={() => void onOpen(artifact)}>
                     <Icon name="external" size={13} />
                   </button>
                 )}
                 {onReveal && (
-                  <button type="button" aria-label={`Reveal ${artifact.name}`} onClick={() => void onReveal(artifact)}>
+                  <button type="button" aria-label={`Reveal ${artifact.name}`} disabled={artifact.exists === false} onClick={() => void onReveal(artifact)}>
                     <Icon name="folder" size={13} />
                   </button>
                 )}
@@ -1205,7 +1177,7 @@ function ArtifactPanel({
   );
 }
 
-function ArtifactPreviewPanel({ result, onClose }: { result: ArtifactPreviewResult; onClose: () => void }) {
+export function ArtifactPreviewPanel({ result, onClose }: { result: ArtifactPreviewResult; onClose: () => void }) {
   const { artifact, preview } = result;
   return (
     <section className="artifact-preview" aria-label="File preview">
@@ -1239,7 +1211,7 @@ function ArtifactPreviewPanel({ result, onClose }: { result: ArtifactPreviewResu
 }
 
 function MarkdownPreview({ content, truncated, limitBytes }: { content: string; truncated: boolean; limitBytes: number }) {
-  const html = marked.parse(content, { async: false }) as string;
+  const html = sanitizeHtml(marked.parse(content, { async: false }) as string);
   return (
     <div className="artifact-preview-md">
       <div dangerouslySetInnerHTML={{ __html: html }} />
@@ -1334,7 +1306,7 @@ function DocumentPreview({ dataBase64, mimeType, name }: { dataBase64: string; m
   if (content.kind === "html") {
     return (
       <div className="artifact-preview-md artifact-preview-docx">
-        <div dangerouslySetInnerHTML={{ __html: content.html }} />
+        <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(content.html) }} />
       </div>
     );
   }
@@ -1358,6 +1330,93 @@ function isArtifactEvent(event: AgentEvent): event is AgentEvent & { artifact: A
     || event.kind === "artifact_moved"
   )
     && isArtifact(event.artifact);
+}
+
+function sanitizeHtml(html: string) {
+  if (typeof document === "undefined") return "";
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  sanitizeNode(template.content);
+  return template.innerHTML;
+}
+
+const allowedHtmlTags = new Set([
+  "a",
+  "b",
+  "blockquote",
+  "br",
+  "code",
+  "div",
+  "em",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "hr",
+  "i",
+  "li",
+  "ol",
+  "p",
+  "pre",
+  "s",
+  "span",
+  "strong",
+  "table",
+  "tbody",
+  "td",
+  "th",
+  "thead",
+  "tr",
+  "u",
+  "ul",
+]);
+
+const allowedHtmlAttrs = new Set(["align", "colspan", "href", "rowspan", "title"]);
+
+function sanitizeNode(parent: ParentNode) {
+  for (const node of Array.from(parent.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) continue;
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      node.remove();
+      continue;
+    }
+
+    const element = node as HTMLElement;
+    const tag = element.tagName.toLowerCase();
+    if (!allowedHtmlTags.has(tag)) {
+      element.replaceWith(...Array.from(element.childNodes));
+      sanitizeNode(parent);
+      continue;
+    }
+
+    for (const attr of Array.from(element.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (!allowedHtmlAttrs.has(name) || name.startsWith("on")) {
+        element.removeAttribute(attr.name);
+        continue;
+      }
+      if (name === "href" && !isSafeHref(attr.value)) {
+        element.removeAttribute(attr.name);
+      }
+    }
+
+    if (tag === "a" && element.getAttribute("href")) {
+      element.setAttribute("rel", "noreferrer noopener");
+      element.setAttribute("target", "_blank");
+    }
+    sanitizeNode(element);
+  }
+}
+
+function isSafeHref(value: string) {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.startsWith("#")
+    || trimmed.startsWith("/")
+    || trimmed.startsWith("http://")
+    || trimmed.startsWith("https://")
+    || trimmed.startsWith("mailto:");
 }
 
 function isArtifact(value: unknown): value is ArtifactSummary {
@@ -1389,28 +1448,47 @@ function upsertArtifact(current: ArtifactSummary[], artifact: ArtifactSummary) {
   return [artifact, ...rest];
 }
 
-function artifactIcon(artifact: ArtifactSummary): IconName {
+function latestRunArtifacts(artifacts: ArtifactSummary[]) {
+  const generated = artifacts.filter((artifact) => artifact.kind !== "attached" && artifact.runId && artifact.exists !== false);
+  const latestRunId = generated[0]?.runId;
+  if (!latestRunId) return [];
+  return generated.filter((artifact) => artifact.runId === latestRunId);
+}
+
+export function artifactIcon(artifact: ArtifactSummary): IconName {
   if (artifact.mimeType.startsWith("image/")) return "image";
   if (artifact.fileType === "csv") return "spreadsheet";
   if (["css", "html", "js", "json", "ts", "tsx", "xml", "yaml", "yml"].includes(artifact.fileType)) return "code";
   return "document";
 }
 
-function artifactKindLabel(artifact: ArtifactSummary) {
+export function artifactKindLabel(artifact: ArtifactSummary) {
   if (artifact.kind === "created") return "Created";
   if (artifact.kind === "attached") return "Attached";
   if (artifact.kind === "updated") return "Updated";
   return "Moved";
 }
 
-function formatBytes(size: number | null) {
+function artifactStatusLabel(artifact: ArtifactSummary) {
+  return artifact.exists === false ? "Missing" : artifactKindLabel(artifact);
+}
+
+function artifactRowClass(artifact: ArtifactSummary, previewId: string | null) {
+  return [
+    "artifact-row",
+    previewId === artifact.id ? "artifact-row--selected" : "",
+    artifact.exists === false ? "artifact-row--missing" : "",
+  ].filter(Boolean).join(" ");
+}
+
+export function formatBytes(size: number | null) {
   if (size === null) return "unknown size";
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function shortPath(filePath: string) {
+export function shortPath(filePath: string) {
   const parts = filePath.split(/[\\/]/).filter(Boolean);
   return parts.slice(-3).join("/");
 }

@@ -12,6 +12,7 @@ type Props = {
   selectedFolder: string | null;
   sessions: SessionSummary[];
   selectedSessionId: string | null;
+  activeView: "chat" | "files";
   localApi: LocalApiClient | null;
   onSelectFolder: (folder: string | null) => void;
   onSelectSession: (sessionId: string | null) => void;
@@ -19,7 +20,8 @@ type Props = {
   onRefreshSessions: () => void;
   onRefreshExtensions: () => void;
   onNewTask: () => void;
-  onFocusAssets: () => void;
+  onOpenSessions: () => void;
+  onOpenFiles: () => void;
   onOpenSettingsTab: (tab: SettingsTab) => void;
   onGrantWorkspace: () => void;
   onToggleTerminal: () => void;
@@ -37,6 +39,7 @@ export function Sidebar({
   selectedFolder,
   sessions,
   selectedSessionId,
+  activeView,
   localApi,
   onSelectFolder,
   onSelectSession,
@@ -44,7 +47,8 @@ export function Sidebar({
   onRefreshSessions,
   onRefreshExtensions,
   onNewTask,
-  onFocusAssets,
+  onOpenSessions,
+  onOpenFiles,
   onOpenSettingsTab,
   onGrantWorkspace,
   onToggleTerminal,
@@ -55,7 +59,7 @@ export function Sidebar({
 
   const navItems: Array<{ label: string; icon: IconName; action: NavAction }> = [
     { label: "Sessions", icon: "document", action: "sessions" },
-    ...(selectedSessionId ? [{ label: "Files", icon: "folder" as IconName, action: "files" as NavAction }] : []),
+    ...(selectedFolder ? [{ label: "Files", icon: "folder" as IconName, action: "files" as NavAction }] : []),
     { label: "Skills", icon: "book", action: "skills" },
     { label: "Extensions", icon: "code", action: "extensions" },
   ];
@@ -65,8 +69,11 @@ export function Sidebar({
   }
 
   function runNavAction(action: NavAction) {
-    if (action === "sessions") sessionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-    else if (action === "files") onFocusAssets();
+    if (action === "sessions") {
+      onOpenSessions();
+      sessionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+    else if (action === "files") onOpenFiles();
     else if (action === "skills") onOpenSettingsTab("skills");
     else if (action === "extensions") onOpenSettingsTab("extensions");
   }
@@ -118,12 +125,17 @@ export function Sidebar({
 
       <div className="sidebar-scroll">
         <nav className="sidebar-nav" aria-label="Main navigation">
-          <button className="nav-item nav-item--active" type="button" onClick={newTask}>
+          <button className={`nav-item${activeView === "chat" && !selectedSessionId ? " nav-item--active" : ""}`} type="button" onClick={newTask}>
             <Icon name="plusCircle" size={18} />
             <span>New task</span>
           </button>
           {navItems.map((item) => (
-            <button className="nav-item" type="button" key={item.label} onClick={() => runNavAction(item.action)}>
+            <button
+              className={`nav-item${navIsActive(item.action, activeView, selectedSessionId) ? " nav-item--active" : ""}`}
+              type="button"
+              key={item.label}
+              onClick={() => runNavAction(item.action)}
+            >
               <Icon name={item.icon} size={18} />
               <span>{item.label}</span>
             </button>
@@ -263,6 +275,12 @@ export function Sidebar({
       </footer>
     </aside>
   );
+}
+
+function navIsActive(action: NavAction, activeView: "chat" | "files", selectedSessionId: string | null) {
+  if (action === "files") return activeView === "files";
+  if (action === "sessions") return activeView === "chat" && Boolean(selectedSessionId);
+  return false;
 }
 
 function extensionResourceSummary(extension: ExtensionSummary) {

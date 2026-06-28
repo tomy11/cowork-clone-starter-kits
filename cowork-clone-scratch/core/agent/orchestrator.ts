@@ -36,6 +36,7 @@ export type PlanStep = {
 
 export type RunOptions = {
   signal?: AbortSignal;
+  workspace?: string;
   availableSkills?: SkillMetadata[];
   loadSkill?: (name: string) => Promise<Skill>;
   requestConfirmation?: (request: ConfirmationRequest) => Promise<boolean>;
@@ -176,6 +177,7 @@ ${skillList}
             acl: this.cfg.acl,
             audit: this.cfg.audit,
             tools: this.cfg.tools,
+            workspace: options.workspace,
             systemPrompt: this.cfg.systemPrompt,
             signal: options.signal,
             requestConfirmation: options.requestConfirmation,
@@ -278,6 +280,8 @@ const DEFAULT_SYSTEM_PROMPT = `คุณคือ AI coworker ทำงานร
 - ใช้ภาษาเดียวกับ user
 - ใช้ skill instructions ที่ได้รับอย่างเคร่งครัด
 - action ที่เขียน ลบ หรือย้ายไฟล์ต้องผ่าน permission flow
+- เวลาผู้ใช้ขอให้สร้างไฟล์ผลลัพธ์ ให้สร้างเฉพาะไฟล์ปลายทางที่ผู้ใช้ต้องการ ห้ามทิ้ง helper script เช่น setup_and_generate.py, generate.py, gen_doc.py, run.sh, install_requirements.sh ไว้ใน workspace
+- ถ้าต้องรัน code เพื่อสร้างไฟล์ ให้ใช้ run_command แบบ inline หรือ tool เฉพาะทาง แทนการเขียน script ชั่วคราวลง workspace
 - ถ้าไม่แน่ใจให้ถาม user และสรุปผลให้ชัดเจน`;
 
 function extractJson(text: string): Record<string, unknown> {

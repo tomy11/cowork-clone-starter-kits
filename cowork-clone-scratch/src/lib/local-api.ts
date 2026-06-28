@@ -76,6 +76,7 @@ export type ArtifactSummary = {
   mimeType: string;
   sizeBytes: number | null;
   toolName: string | null;
+  exists?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -354,6 +355,12 @@ export class LocalApiClient {
     const result = await this.get<{ artifacts: ArtifactSummary[] }>(
       `/sessions/${encodeURIComponent(sessionId)}/artifacts`,
     );
+    return result.artifacts;
+  }
+
+  async listWorkspaceArtifacts(workspace: string) {
+    const params = new URLSearchParams({ workspace });
+    const result = await this.get<{ artifacts: ArtifactSummary[] }>(`/artifacts?${params.toString()}`);
     return result.artifacts;
   }
 

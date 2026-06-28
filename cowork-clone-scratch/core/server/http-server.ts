@@ -345,6 +345,13 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/artifacts") {
+      const workspace = url.searchParams.get("workspace");
+      if (!workspace) return writeJson(response, 400, { error: "workspace is required" });
+      writeJson(response, 200, { artifacts: runtime.listWorkspaceArtifacts(workspace) });
+      return;
+    }
+
     const fileReadMatch = url.pathname.match(/^\/sessions\/([^/]+)\/files\/read$/);
     if (request.method === "POST" && fileReadMatch) {
       const conversationId = decodeURIComponent(fileReadMatch[1]);

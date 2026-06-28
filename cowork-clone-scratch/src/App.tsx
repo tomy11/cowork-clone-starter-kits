@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Chat } from "./components/Chat";
+import { FilesPage } from "./components/FilesPage";
 import { ProviderSettings, type SettingsTab } from "./components/ProviderSettings";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalDock } from "./components/TerminalDock";
@@ -15,6 +16,7 @@ import {
 } from "./lib/local-api";
 
 type SidecarBootstrap = { httpUrl: string };
+type MainView = "chat" | "files";
 
 export default function App() {
   const [grantedFolders, setGrantedFolders] = useState<string[]>([]);
@@ -32,8 +34,8 @@ export default function App() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("providers");
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [chatKey, setChatKey] = useState(0);
-  const [focusFilesKey, setFocusFilesKey] = useState(0);
   const [resumeLatest, setResumeLatest] = useState(true);
+  const [mainView, setMainView] = useState<MainView>("chat");
 
   useEffect(() => {
     async function initialize() {
@@ -114,6 +116,7 @@ export default function App() {
   }
 
   function startNewTask() {
+    setMainView("chat");
     setResumeLatest(false);
     setSelectedSessionId(null);
     if (localApi && selectedFolder) void localApi.setActiveSession(selectedFolder, null);
@@ -127,6 +130,7 @@ export default function App() {
   }
 
   function selectSession(sessionId: string | null) {
+    setMainView("chat");
     setSelectedSessionId(sessionId);
     if (localApi && selectedFolder) void localApi.setActiveSession(selectedFolder, sessionId);
     setResumeLatest(false);
@@ -159,6 +163,7 @@ export default function App() {
         selectedFolder={selectedFolder}
         sessions={sessions}
         selectedSessionId={selectedSessionId}
+        activeView={mainView}
         localApi={localApi}
         onSelectFolder={selectFolder}
         onSelectSession={selectSession}
@@ -166,7 +171,8 @@ export default function App() {
         onRefreshSessions={() => void refreshSessions()}
         onRefreshExtensions={() => void refreshExtensions()}
         onNewTask={startNewTask}
-        onFocusAssets={() => setFocusFilesKey((key) => key + 1)}
+        onOpenSessions={() => setMainView("chat")}
+        onOpenFiles={() => setMainView("files")}
         onOpenSettingsTab={openSettings}
         onGrantWorkspace={() => void grantWorkspace()}
         onToggleTerminal={() => setTerminalOpen((open) => !open)}
@@ -187,24 +193,33 @@ export default function App() {
           </div>
         </header>
 
-        <Chat
-          key={chatKey}
-          folder={selectedFolder}
-          sessionId={selectedSessionId}
-          resumeLatest={resumeLatest}
-          localApi={localApi}
-          focusFilesKey={focusFilesKey}
-          providers={providers}
-          selectedProviderId={selectedProviderId}
-          onSelectProvider={setSelectedProviderId}
-          onGrantWorkspace={() => void grantWorkspace()}
-          onOpenProviderSettings={() => openSettings("providers")}
-          onSessionCreated={(session) => {
-            setSelectedSessionId(session.id);
-            void localApi?.setActiveSession(session.workspace, session.id);
-            void refreshSessions(session.workspace);
-          }}
-        />
+        {mainView === "files" ? (
+          <FilesPage
+            localApi={localApi}
+            workspaces={grantedFolders}
+            selectedWorkspace={selectedFolder}
+            onSelectWorkspace={selectFolder}
+            onGrantWorkspace={() => void grantWorkspace()}
+          />
+        ) : (
+          <Chat
+            key={chatKey}
+            folder={selectedFolder}
+            sessionId={selectedSessionId}
+            resumeLatest={resumeLatest}
+            localApi={localApi}
+            providers={providers}
+            selectedProviderId={selectedProviderId}
+            onSelectProvider={setSelectedProviderId}
+            onGrantWorkspace={() => void grantWorkspace()}
+            onOpenProviderSettings={() => openSettings("providers")}
+            onSessionCreated={(session) => {
+              setSelectedSessionId(session.id);
+              void localApi?.setActiveSession(session.workspace, session.id);
+              void refreshSessions(session.workspace);
+            }}
+          />
+        )}
         {terminalOpen && <TerminalDock folder={selectedFolder} onClose={() => setTerminalOpen(false)} />}
       </main>
 

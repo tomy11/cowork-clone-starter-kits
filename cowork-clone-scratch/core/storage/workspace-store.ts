@@ -423,6 +423,22 @@ export class WorkspaceStore {
     return rows.map(hydrateArtifact);
   }
 
+  listWorkspaceArtifacts(workspace: string): StoredArtifact[] {
+    const rows = this.db
+      .prepare(`
+        SELECT artifacts.id, artifacts.conversation_id, artifacts.run_id, artifacts.source_event_id,
+          artifacts.kind, artifacts.path, artifacts.previous_path, artifacts.name,
+          artifacts.file_type, artifacts.mime_type, artifacts.size_bytes, artifacts.tool_name,
+          artifacts.created_at, artifacts.updated_at
+        FROM artifacts
+        INNER JOIN conversations ON conversations.id = artifacts.conversation_id
+        WHERE conversations.workspace = ?
+        ORDER BY artifacts.updated_at DESC, artifacts.rowid DESC
+      `)
+      .all(path.resolve(workspace)) as ArtifactRow[];
+    return rows.map(hydrateArtifact);
+  }
+
   getArtifact(id: string): StoredArtifact | null {
     const row = this.db
       .prepare(`

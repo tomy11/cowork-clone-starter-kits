@@ -11,6 +11,7 @@ export type ToolContext = {
   agentId: string;
   acl: PermissionACL;
   confirmationApproved?: boolean;
+  workspace?: string;
 };
 
 export type ToolImpl = {

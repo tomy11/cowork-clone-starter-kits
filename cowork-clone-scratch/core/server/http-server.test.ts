@@ -211,17 +211,25 @@ describe("local HTTP server", () => {
       { id: created.provider.id, name: "Claude Prod", hasApiKey: true },
     ]);
 
-    const readiness = await postJson(`${handle.url}/providers/${created.provider.id}/test`, {}) as {
+    const claudeModels = await getJson(`${handle.url}/providers/${created.provider.id}/models`) as {
       ok: boolean;
       status: string;
+      models: string[];
     };
-    expect(readiness).toMatchObject({ ok: true, status: "ready" });
+    expect(claudeModels).toMatchObject({ ok: true, status: "preset" });
+    expect(claudeModels.models).toContain("claude-sonnet-4-5");
 
     const mock = await postJson(`${handle.url}/providers`, {
       type: "mock",
       name: "Mock",
       model: "mock",
     }) as { provider: { id: string } };
+    const readiness = await postJson(`${handle.url}/providers/${mock.provider.id}/test`, {}) as {
+      ok: boolean;
+      status: string;
+    };
+    expect(readiness).toMatchObject({ ok: true, status: "ready" });
+
     const models = await getJson(`${handle.url}/providers/${mock.provider.id}/models`) as {
       ok: boolean;
       models: string[];
@@ -363,7 +371,13 @@ describe("local HTTP server", () => {
       sizeBytes: 14,
       toolName: "attach_file",
     });
-
+    let workspaceArtifacts = await getJson(`${handle.url}/artifacts?workspace=${encodeURIComponent(workspace)}`) as {
+      artifacts: Array<{ id: string; path: string; kind: string; exists: boolean }>;
+    };
+    expect(workspaceArtifacts.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: artifact.id, path: path.join(workspace, "report.md"), kind: "created", exists: false }),
+      expect.objectContaining({ id: attached.artifact.id, path: attachedPath, kind: "attached", exists: true }),
+    ]));
     const replay = await getJson(`${handle.url}/sessions/${created.conversation.id}/events/replay`) as {
       events: Array<{ kind: string; event: { kind: string; artifact?: { id: string } } }>;
     };
@@ -381,6 +395,12 @@ describe("local HTTP server", () => {
       content: "attached input",
       truncated: false,
     });
+    await rm(attachedPath);
+    const missingWorkspaceArtifacts = await getJson(`${handle.url}/artifacts?workspace=${encodeURIComponent(workspace)}`) as {
+      artifacts: Array<{ id: string; exists: boolean }>;
+    };
+    expect(missingWorkspaceArtifacts.artifacts.find((item) => item.id === attached.artifact.id))
+      .toMatchObject({ exists: false });
 
     const batchWrite = await postJson(`${handle.url}/sessions/${created.conversation.id}/files/write`, {
       files: [

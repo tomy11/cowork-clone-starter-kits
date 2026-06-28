@@ -86,6 +86,13 @@ type PendingConfirmation = PendingApproval & {
 
 type SessionListener = (event: AppEvent) => void;
 
+type PendingToolCall = {
+  name: string;
+  args: unknown;
+  existedBefore?: boolean;
+  outputStates?: Array<{ path: string; existedBefore: boolean }>;
+};
+
 type RunProviderMetadata = {
   providerProfileId: string | null;
   providerName: string;
@@ -153,7 +160,7 @@ export class AppRuntime {
   private activeRuns = new Map<string, AbortController>();
   private pendingConfirmations = new Map<string, PendingConfirmation>();
   private sessionListeners = new Map<string, Set<SessionListener>>();
-  private pendingToolCalls = new Map<string, Array<{ name: string; args: unknown; existedBefore?: boolean }>>();
+  private pendingToolCalls = new Map<string, PendingToolCall[]>();
   private runToolCallKeys = new Set<string>();
 
   constructor(private cfg: AppRuntimeConfig) {}
@@ -401,14 +408,19 @@ export class AppRuntime {
   }
 
   listArtifacts(conversationId: string) {
-    return this.cfg.store.listArtifacts(conversationId);
+    return artifactsWithFileStatus(this.cfg.store.listArtifacts(conversationId));
+  }
+
+  listWorkspaceArtifacts(workspace: string) {
+    return artifactsWithFileStatus(this.cfg.store.listWorkspaceArtifacts(workspace));
   }
 
   getArtifact(id: string) {
-    return this.cfg.store.getArtifact(id);
+    const artifact = this.cfg.store.getArtifact(id);
+    return artifact ? artifactWithFileStatus(artifact) : null;
   }
 
-  previewArtifact(id: string, options: { limitBytes?: number } = {}): { artifact: StoredArtifact; preview: ArtifactPreview } | null {
+  previewArtifact(id: string, options: { limitBytes?: number } = {}): { artifact: StoredArtifact & { exists: boolean }; preview: ArtifactPreview } | null {
     const artifact = this.cfg.store.getArtifact(id);
     if (!artifact) return null;
     const conversation = this.cfg.store.getConversation(artifact.conversationId);
@@ -420,7 +432,7 @@ export class AppRuntime {
     const limitBytes = clampPreviewLimit(options.limitBytes ?? 64 * 1024);
     if (!existsSync(target)) {
       return {
-        artifact,
+        artifact: artifactWithFileStatus(artifact),
         preview: {
           kind: "missing",
           message: "The file no longer exists on disk.",
@@ -432,7 +444,7 @@ export class AppRuntime {
     const stats = statSync(target);
     if (!stats.isFile()) {
       return {
-        artifact,
+        artifact: artifactWithFileStatus(artifact),
         preview: {
           kind: "binary",
           message: "Only regular files can be previewed.",
@@ -444,7 +456,7 @@ export class AppRuntime {
     if (isTextPreview(artifact)) {
       const content = readPreviewBytes(target, limitBytes).toString("utf-8");
       return {
-        artifact,
+        artifact: artifactWithFileStatus(artifact),
         preview: {
           kind: "text",
           content,
@@ -456,7 +468,7 @@ export class AppRuntime {
     if (isImagePreview(artifact) && stats.size <= limitBytes) {
       const dataUrl = `data:${artifact.mimeType};base64,${readFileSync(target).toString("base64")}`;
       return {
-        artifact,
+        artifact: artifactWithFileStatus(artifact),
         preview: {
           kind: "image",
           dataUrl,
@@ -469,7 +481,7 @@ export class AppRuntime {
     if (isDocumentPreview(artifact) && stats.size <= docLimit) {
       const dataBase64 = readFileSync(target).toString("base64");
       return {
-        artifact,
+        artifact: artifactWithFileStatus(artifact),
         preview: {
           kind: "document",
           dataBase64,
@@ -481,7 +493,7 @@ export class AppRuntime {
       };
     }
     return {
-      artifact,
+      artifact: artifactWithFileStatus(artifact),
       preview: {
         kind: "binary",
         message: stats.size > docLimit
@@ -511,7 +523,7 @@ export class AppRuntime {
     const event: AppEvent = {
       kind: "artifact_attached",
       conversationId,
-      artifact,
+      artifact: artifactWithFileStatus(artifact),
       sourceEventId: null,
     };
     this.cfg.store.addEvent(conversationId, event);
@@ -523,7 +535,7 @@ export class AppRuntime {
       mimeType: artifact.mimeType,
       fileType: artifact.fileType,
     });
-    return artifact;
+    return artifactWithFileStatus(artifact);
   }
 
   async batchReadFiles(
@@ -588,7 +600,7 @@ export class AppRuntime {
       const artifactEvent: AppEvent = {
         kind: artifactEventKind(artifact.kind),
         conversationId,
-        artifact,
+        artifact: artifactWithFileStatus(artifact),
         sourceEventId: null,
       };
       this.cfg.store.addEvent(conversationId, artifactEvent);
@@ -607,7 +619,7 @@ export class AppRuntime {
         mimeType: artifact.mimeType,
         sizeBytes: artifact.sizeBytes,
         created,
-        artifact,
+        artifact: artifactWithFileStatus(artifact),
       });
     }
     return { files: result };
@@ -825,23 +837,25 @@ export class AppRuntime {
       const storedEvent = this.cfg.store.addEvent(conversationId, enriched);
       onEvent?.(enriched);
       this.publishSessionEvent(conversationId, enriched);
-      const artifactEvent = this.recordArtifactFromEvent(conversationId, runId, enriched, storedEvent.id);
-      if (!artifactEvent) return;
-      events.push(artifactEvent);
-      this.cfg.store.addEvent(conversationId, artifactEvent);
-      onEvent?.(artifactEvent);
-      this.publishSessionEvent(conversationId, artifactEvent);
-      const artifact = (artifactEvent as AppEvent & { artifact: StoredArtifact }).artifact;
-      this.recordSessionEvent(conversationId, fileEventKind(artifact.kind), {
-        path: artifact.path,
-        previousPath: artifact.previousPath,
-        artifactId: artifact.id,
-        runId,
-        sourceEventId: storedEvent.id,
-        sizeBytes: artifact.sizeBytes,
-        mimeType: artifact.mimeType,
-        fileType: artifact.fileType,
-      });
+      const artifactEvents = this.recordArtifactFromEvent(conversationId, runId, enriched, storedEvent.id);
+      if (!artifactEvents) return;
+      for (const artifactEvent of artifactEvents) {
+        events.push(artifactEvent);
+        this.cfg.store.addEvent(conversationId, artifactEvent);
+        onEvent?.(artifactEvent);
+        this.publishSessionEvent(conversationId, artifactEvent);
+        const artifact = (artifactEvent as AppEvent & { artifact: StoredArtifact }).artifact;
+        this.recordSessionEvent(conversationId, fileEventKind(artifact.kind), {
+          path: artifact.path,
+          previousPath: artifact.previousPath,
+          artifactId: artifact.id,
+          runId,
+          sourceEventId: storedEvent.id,
+          sizeBytes: artifact.sizeBytes,
+          mimeType: artifact.mimeType,
+          fileType: artifact.fileType,
+        });
+      }
     };
 
     emit({
@@ -861,6 +875,7 @@ export class AppRuntime {
       const contextualMessage = withWorkspaceContext(rawMessage, workspace);
       for await (const event of orchestrator.run(contextualMessage, history, {
         signal: controller.signal,
+        workspace,
         availableSkills,
         loadSkill: (name) => this.loadSkill(name),
         onEvent: emit,
@@ -948,17 +963,21 @@ export class AppRuntime {
     runId: string,
     event: AppEvent,
     sourceEventId: number,
-  ): AppEvent | null {
+  ): AppEvent[] | null {
     if (event.kind === "tool_call") {
       const callId = toolCallId(event);
       const key = callId ? `${String(event.id ?? "agent")}:${callId}` : String(event.id ?? "agent");
       const calls = this.pendingToolCalls.get(key) ?? [];
       const args = event.args;
+      const conversation = this.cfg.store.getConversation(conversationId);
       calls.push({
         name: String(event.name ?? ""),
         args,
         existedBefore: isObject(args) && typeof args.path === "string"
           ? existsSync(args.path)
+          : undefined,
+        outputStates: conversation && isObject(args)
+          ? sandboxOutputStates(args.outputs, conversation.workspace)
           : undefined,
       });
       this.pendingToolCalls.set(key, calls.slice(-20));
@@ -975,7 +994,7 @@ export class AppRuntime {
     else { this.pendingToolCalls.delete(key); this.runToolCallKeys.delete(key); }
     if (!call || !isObject(call.args)) return null;
 
-    const artifactInput = artifactInputFromToolResult(
+    const artifactInputs = artifactInputsFromToolResult(
       conversationId,
       runId,
       sourceEventId,
@@ -983,16 +1002,19 @@ export class AppRuntime {
       call.args,
       event.result,
       call.existedBefore,
+      call.outputStates,
     );
-    if (!artifactInput) return null;
-    const artifact = this.cfg.store.addArtifact(artifactInput);
-    return {
-      kind: artifactEventKind(artifact.kind),
-      runId,
-      conversationId,
-      artifact,
-      sourceEventId,
-    };
+    if (artifactInputs.length === 0) return null;
+    return artifactInputs.map((artifactInput) => {
+      const artifact = this.cfg.store.addArtifact(artifactInput);
+      return {
+        kind: artifactEventKind(artifact.kind),
+        runId,
+        conversationId,
+        artifact: artifactWithFileStatus(artifact),
+        sourceEventId,
+      };
+    });
   }
 
   private createOrchestrator(llm: LLMProvider) {
@@ -1192,7 +1214,7 @@ function optionalString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function artifactInputFromToolResult(
+function artifactInputsFromToolResult(
   conversationId: string,
   runId: string,
   sourceEventId: number,
@@ -1200,12 +1222,13 @@ function artifactInputFromToolResult(
   args: Record<string, unknown>,
   result: unknown,
   existedBefore?: boolean,
-): ArtifactInput | null {
+  outputStates?: Array<{ path: string; existedBefore: boolean }>,
+): ArtifactInput[] {
   const resultText = typeof result === "string" ? result : "";
   if (toolName === "write_file" && resultText.startsWith("Wrote ")) {
     const target = stringArg(args, "path");
-    if (!target) return null;
-    return {
+    if (!target) return [];
+    return [{
       conversationId,
       runId,
       sourceEventId,
@@ -1213,13 +1236,29 @@ function artifactInputFromToolResult(
       path: target,
       toolName,
       metadata: fileMetadata(target),
-    };
+    }];
+  }
+  if (
+    (toolName === "create_document" || toolName === "create_spreadsheet")
+    && resultText.startsWith("Created ")
+  ) {
+    const target = stringArg(args, "path");
+    if (!target) return [];
+    return [{
+      conversationId,
+      runId,
+      sourceEventId,
+      kind: existedBefore ? "updated" : "created",
+      path: target,
+      toolName,
+      metadata: fileMetadata(target),
+    }];
   }
   if (toolName === "move_file" && resultText.startsWith("Moved ")) {
     const target = stringArg(args, "to");
     const previousPath = stringArg(args, "from");
-    if (!target) return null;
-    return {
+    if (!target) return [];
+    return [{
       conversationId,
       runId,
       sourceEventId,
@@ -1228,9 +1267,46 @@ function artifactInputFromToolResult(
       previousPath,
       toolName,
       metadata: fileMetadata(target),
-    };
+    }];
   }
-  return null;
+  if (toolName === "run_command" && outputStates && outputStates.length > 0) {
+    return outputStates
+      .filter((output) => existsSync(output.path))
+      .map((output) => ({
+        conversationId,
+        runId,
+        sourceEventId,
+        kind: output.existedBefore ? "updated" as const : "created" as const,
+        path: output.path,
+        toolName,
+        metadata: fileMetadata(output.path),
+      }));
+  }
+  return [];
+}
+
+function sandboxOutputStates(outputs: unknown, workspace: string) {
+  if (!Array.isArray(outputs)) return undefined;
+  const states = outputs
+    .map((output) => sandboxOutputPath(output, workspace))
+    .filter((outputPath): outputPath is string => Boolean(outputPath))
+    .map((outputPath) => ({ path: outputPath, existedBefore: existsSync(outputPath) }));
+  return states.length > 0 ? states : undefined;
+}
+
+function sandboxOutputPath(output: unknown, workspace: string) {
+  if (typeof output !== "string" || !output.trim()) return null;
+  const raw = output.trim();
+  let target: string;
+  if (raw === "/workspace") return null;
+  if (raw.startsWith("/workspace/")) {
+    target = path.resolve(workspace, raw.slice("/workspace/".length));
+  } else if (path.isAbsolute(raw)) {
+    target = path.resolve(raw);
+  } else {
+    target = path.resolve(workspace, raw);
+  }
+  return pathIsInside(workspace, target) ? target : null;
 }
 
 function fileMetadata(filePath: string): ArtifactInput["metadata"] {
@@ -1248,6 +1324,14 @@ function fileMetadata(filePath: string): ArtifactInput["metadata"] {
       sizeBytes: null,
     };
   }
+}
+
+function artifactWithFileStatus<T extends StoredArtifact>(artifact: T): T & { exists: boolean } {
+  return { ...artifact, exists: existsSync(artifact.path) };
+}
+
+function artifactsWithFileStatus<T extends StoredArtifact>(artifacts: T[]): Array<T & { exists: boolean }> {
+  return artifacts.map(artifactWithFileStatus);
 }
 
 function artifactEventKind(

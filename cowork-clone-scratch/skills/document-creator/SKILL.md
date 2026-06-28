@@ -10,11 +10,13 @@ description: สร้างไฟล์เอกสาร xlsx, docx, pdf, csv 
 **ห้ามเด็ดขาด:**
 - เขียน script แล้วบอกให้ user ไปรันเอง
 - สร้าง `setup_and_generate.py`, `install_requirements.sh` หรือไฟล์กลางใดๆ
+- สร้าง `run.sh`, `generate.py`, `gen_doc.py` หรือ helper script ชั่วคราวไว้ใน workspace
 - บอกว่า "คุณต้องรัน..." หรือ "เปิด Terminal แล้ว..."
+- ทิ้งไฟล์ที่ไม่ใช่ output ที่ user ขอไว้ในรายการ Files
 
 **ต้องทำ:**
 - สร้างไฟล์ปลายทาง (.xlsx / .docx / .pdf) ด้วย tool โดยตรง
-- ถ้าต้องรัน code ให้ใช้ `run_command` ทันที อย่าเขียนไฟล์ script ให้ user รัน
+- ถ้าต้องรัน code ให้ใช้ `run_command` แบบ inline ทันที อย่าเขียนไฟล์ script แยก
 - รายงานผลว่าสร้างไฟล์อะไร ที่ path ไหน
 
 ---
@@ -66,15 +68,17 @@ PDF ต้องใช้ `run_command` รัน Python inline:
 
 ```
 run_command({
-  command: "python3 -c \"\nimport sys\ntry:\n    from reportlab.lib.pagesizes import A4\n    from reportlab.pdfgen import canvas\nexcept ImportError:\n    import subprocess\n    subprocess.run([sys.executable, '-m', 'pip', 'install', 'reportlab', '-q'])\n    from reportlab.lib.pagesizes import A4\n    from reportlab.pdfgen import canvas\n\nc = canvas.Canvas('/path/to/output.pdf', pagesize=A4)\nc.setFont('Helvetica', 14)\nc.drawString(72, 750, 'หัวเรื่อง')\nc.save()\nprint('Created /path/to/output.pdf')\n\"",
-  cwd: "/workspace/path"
+  command: "python3 -c \"\nimport sys\ntry:\n    from reportlab.lib.pagesizes import A4\n    from reportlab.pdfgen import canvas\nexcept ImportError:\n    import subprocess\n    subprocess.run([sys.executable, '-m', 'pip', 'install', 'reportlab', '-q'])\n    from reportlab.lib.pagesizes import A4\n    from reportlab.pdfgen import canvas\n\nc = canvas.Canvas('/workspace/output.pdf', pagesize=A4)\nc.setFont('Helvetica', 14)\nc.drawString(72, 750, 'หัวเรื่อง')\nc.save()\nprint('Created /workspace/output.pdf')\n\"",
+  cwd: "/workspace",
+  write: true,
+  outputs: ["/workspace/output.pdf"]
 })
 ```
 
 **pattern สำหรับ PDF ที่ซับซ้อน:**
 1. เขียน Python ทั้งหมดเป็น string ใน `command`
-2. ใส่ auto-install dependency ไว้ใน script นั้น
-3. รัน `run_command` เลย — ไม่ต้องสร้างไฟล์ .py แยก
+2. ใส่ auto-install dependency ไว้ใน script นั้น ถ้าจำเป็นต้องใช้ network ให้ขออนุญาตด้วย `network: "bridge"`
+3. รัน `run_command` พร้อม `write: true`, `outputs: [...]` และสร้าง output ใต้ `/workspace` เลย — ไม่ต้องสร้างไฟล์ .py แยก
 
 ### สร้าง CSV
 
@@ -91,19 +95,13 @@ write_file({
 
 ## กรณี Python ต้องซับซ้อน (หลายสิบบรรทัด)
 
-ถ้า Python script ยาวเกินจะใส่ใน `command` inline ได้สะดวก:
+ยังคงต้องใช้ `run_command` แบบ inline เท่านั้น:
 
-1. `write_file` เขียน script ไปที่ `/tmp/gen_doc.py` (หรือ workspace temp)
-2. `run_command` รัน `python3 /tmp/gen_doc.py`
-3. (optional) ลบไฟล์ temp ด้วย `delete_file`
+1. ส่ง code ผ่าน `python3 -c "..."` หรือ shell heredoc ใน `command`
+2. ให้ code สร้างเฉพาะไฟล์ output ที่ user ขอ
+3. ห้ามใช้ `write_file` เพื่อสร้าง script ชั่วคราวใน workspace
 
-```
-write_file({ path: "/tmp/gen_doc.py", content: "...โค้ด Python ยาวๆ..." })
-run_command({ command: "python3 /tmp/gen_doc.py", cwd: "/workspace" })
-delete_file({ path: "/tmp/gen_doc.py" })
-```
-
-**ยังคงห้าม:** เขียน script ไว้ใน workspace แล้วบอก user ให้รันเอง
+ถ้า inline command ยาวเกินกว่าจะทำได้อย่างมั่นใจ ให้ลด scope, ใช้ built-in document tools, หรือบอก user อย่างตรงไปตรงมาว่าต้องการ feature เพิ่มเติม แทนการทิ้ง helper script ไว้ใน workspace
 
 ---
 
@@ -114,7 +112,7 @@ User: "แปลง CSV นี้เป็น Excel และ PDF"
 **ถูก:**
 1. `read_file` อ่าน CSV
 2. `create_spreadsheet` สร้าง .xlsx ทันที
-3. `run_command` รัน Python สร้าง PDF ทันที
+3. `run_command` รัน Python สร้าง PDF ทันที พร้อมระบุ `outputs`
 4. รายงาน: "สร้างแล้ว:\n- output.xlsx\n- output.pdf"
 
 **ผิด:**

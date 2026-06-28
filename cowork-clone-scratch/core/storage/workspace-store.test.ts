@@ -113,6 +113,18 @@ describe("WorkspaceStore", () => {
         mimeType: "application/pdf",
       },
     });
+    store.grantWorkspace("/tmp/other-workspace");
+    const otherConversationId = store.ensureConversation("/tmp/other-workspace", "Other files");
+    store.addArtifact({
+      conversationId: otherConversationId,
+      kind: "created",
+      path: "/tmp/other-workspace/other.md",
+      metadata: {
+        sizeBytes: 8,
+        fileType: "md",
+        mimeType: "text/markdown",
+      },
+    });
 
     expect(store.listArtifacts(conversationId)).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -141,6 +153,11 @@ describe("WorkspaceStore", () => {
         toolName: "attach_file",
       }),
     ]));
+    expect(store.listWorkspaceArtifacts("/tmp/example-workspace")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: artifact.id, path: "/tmp/example-workspace/notes.md" }),
+      expect.objectContaining({ id: attached.id, path: "/tmp/example-workspace/brief.pdf" }),
+    ]));
+    expect(store.listWorkspaceArtifacts("/tmp/example-workspace")).toHaveLength(2);
     expect(store.getArtifact(artifact.id)).toMatchObject({ id: artifact.id, path: "/tmp/example-workspace/notes.md" });
     store.close();
   });

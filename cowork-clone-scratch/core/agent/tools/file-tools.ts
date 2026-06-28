@@ -48,6 +48,12 @@ const writeFile: ToolImpl = {
   },
   async execute(args, ctx) {
     const target = String(args.path);
+    const content = String(args.content);
+    const helperBlockReason = generatedHelperScriptReason(target, content);
+    if (helperBlockReason) {
+      throw new Error(helperBlockReason);
+    }
+
     const decision = await ctx.acl.check("write_file", { path: target, operation: "write" });
     if (!decision.allowed) throw new Error(decision.reason);
     if (decision.requiresConfirm && !ctx.confirmationApproved) {
@@ -55,8 +61,8 @@ const writeFile: ToolImpl = {
     }
 
     await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, String(args.content), "utf-8");
-    return `Wrote ${target} (${String(args.content).length} bytes)`;
+    await fs.writeFile(target, content, "utf-8");
+    return `Wrote ${target} (${content.length} bytes)`;
   },
 };
 
@@ -201,3 +207,22 @@ export const builtInFileTools: ToolImpl[] = [
   deleteFile,
   searchFiles,
 ];
+
+function generatedHelperScriptReason(filePath: string, content: string) {
+  const name = path.basename(filePath).toLowerCase();
+  if (["setup_and_generate.py", "install_requirements.sh", "generate_document.py", "gen_doc.py"].includes(name)) {
+    return `Refusing to create helper script "${name}". Create only the requested output file, or run code inline with run_command without leaving workspace scripts behind.`;
+  }
+  if ((name === "run.sh" || name === "generate.py") && looksLikeDocumentGenerationHelper(content)) {
+    return `Refusing to create ${name} as a document-generation helper. Use run_command inline and leave only the requested output file.`;
+  }
+  return null;
+}
+
+function looksLikeDocumentGenerationHelper(content: string) {
+  const text = content.toLowerCase();
+  return (
+    /(python|python3|pip|npm|node)/.test(text)
+    && /(reportlab|openpyxl|xlsx|docx|weasyprint|pdf|spreadsheet|document|generate)/.test(text)
+  );
+}

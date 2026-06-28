@@ -37,6 +37,7 @@ export type SubAgentConfig = {
   acl: PermissionACL;
   audit: AuditLog;
   tools: ToolRegistry;
+  workspace?: string;
   systemPrompt?: string;
   maxToolRounds?: number;
   signal?: AbortSignal;
@@ -177,6 +178,7 @@ export class SubAgent {
               agentId: task.id,
               acl: this.cfg.acl,
               confirmationApproved,
+              workspace: this.cfg.workspace,
             });
             this.cfg.audit.log({
               agentId: task.id,
