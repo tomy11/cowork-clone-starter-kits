@@ -12,7 +12,8 @@ type Props = {
   selectedFolder: string | null;
   sessions: SessionSummary[];
   selectedSessionId: string | null;
-  activeView: "chat" | "files";
+  activeView: "chat" | "files" | "settings";
+  activeSettingsTab: SettingsTab;
   localApi: LocalApiClient | null;
   onSelectFolder: (folder: string | null) => void;
   onSelectSession: (sessionId: string | null) => void;
@@ -40,6 +41,7 @@ export function Sidebar({
   sessions,
   selectedSessionId,
   activeView,
+  activeSettingsTab,
   localApi,
   onSelectFolder,
   onSelectSession,
@@ -131,7 +133,7 @@ export function Sidebar({
           </button>
           {navItems.map((item) => (
             <button
-              className={`nav-item${navIsActive(item.action, activeView, selectedSessionId) ? " nav-item--active" : ""}`}
+              className={`nav-item${navIsActive(item.action, activeView, selectedSessionId, activeSettingsTab) ? " nav-item--active" : ""}`}
               type="button"
               key={item.label}
               onClick={() => runNavAction(item.action)}
@@ -260,7 +262,7 @@ export function Sidebar({
       </div>
 
       <footer className="account-row" aria-label="Workspace tools">
-        <button type="button" className="footer-action" title="Settings" onClick={() => onOpenSettingsTab("providers")}>
+        <button type="button" className={`footer-action${activeView === "settings" && activeSettingsTab === "providers" ? " is-active" : ""}`} title="Settings" onClick={() => onOpenSettingsTab("providers")}>
           <Icon name="settings" size={16} />
           <span>Settings</span>
         </button>
@@ -268,7 +270,7 @@ export function Sidebar({
           <Icon name="code" size={16} />
           <span>Terminal</span>
         </button>
-        <button type="button" className="footer-action" title="MCP" onClick={() => onOpenSettingsTab("mcp")}>
+        <button type="button" className={`footer-action${activeView === "settings" && activeSettingsTab === "mcp" ? " is-active" : ""}`} title="MCP" onClick={() => onOpenSettingsTab("mcp")}>
           <Icon name="plug" size={16} />
           <span>MCP</span>
         </button>
@@ -277,9 +279,16 @@ export function Sidebar({
   );
 }
 
-function navIsActive(action: NavAction, activeView: "chat" | "files", selectedSessionId: string | null) {
+function navIsActive(
+  action: NavAction,
+  activeView: "chat" | "files" | "settings",
+  selectedSessionId: string | null,
+  activeSettingsTab: SettingsTab,
+) {
   if (action === "files") return activeView === "files";
   if (action === "sessions") return activeView === "chat" && Boolean(selectedSessionId);
+  if (action === "skills") return activeView === "settings" && activeSettingsTab === "skills";
+  if (action === "extensions") return activeView === "settings" && activeSettingsTab === "extensions";
   return false;
 }
 

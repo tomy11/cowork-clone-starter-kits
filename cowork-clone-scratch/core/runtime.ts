@@ -411,8 +411,32 @@ export class AppRuntime {
     return artifactsWithFileStatus(this.cfg.store.listArtifacts(conversationId));
   }
 
+  cleanStaleConversationArtifacts(conversationId: string) {
+    const artifacts = this.cfg.store.listArtifacts(conversationId);
+    const staleIds = artifacts
+      .filter((artifact) => !existsSync(artifact.path))
+      .map((artifact) => artifact.id);
+    const removed = this.cfg.store.deleteArtifacts(staleIds);
+    return {
+      removed,
+      artifacts: artifactsWithFileStatus(this.cfg.store.listArtifacts(conversationId)),
+    };
+  }
+
   listWorkspaceArtifacts(workspace: string) {
     return artifactsWithFileStatus(this.cfg.store.listWorkspaceArtifacts(workspace));
+  }
+
+  cleanStaleWorkspaceArtifacts(workspace: string) {
+    const artifacts = this.cfg.store.listWorkspaceArtifacts(workspace);
+    const staleIds = artifacts
+      .filter((artifact) => !existsSync(artifact.path))
+      .map((artifact) => artifact.id);
+    const removed = this.cfg.store.deleteArtifacts(staleIds);
+    return {
+      removed,
+      artifacts: artifactsWithFileStatus(this.cfg.store.listWorkspaceArtifacts(workspace)),
+    };
   }
 
   getArtifact(id: string) {
@@ -819,7 +843,7 @@ export class AppRuntime {
       model: providerSelection.metadata.model,
     });
     this.cfg.store.setActiveConversation(workspace, conversationId);
-    this.cfg.store.addMessage(conversationId, "user", rawMessage);
+    this.cfg.store.addMessage(conversationId, "user", rawMessage, runId);
     this.cfg.store.startTask(runId, conversationId);
     this.cfg.store.setConversationProvider(conversationId, {
       providerProfileId: providerSelection.metadata.providerProfileId,
@@ -915,7 +939,7 @@ export class AppRuntime {
         status = "cancelled";
         emit({ kind: "run_cancelled", runId });
       } else if (finalContent) {
-        this.cfg.store.addMessage(conversationId, "assistant", finalContent);
+        this.cfg.store.addMessage(conversationId, "assistant", finalContent, runId);
       }
       this.cfg.store.finishTask(runId, status);
       return { id: request.id, result: { events, runId, conversationId, status } };

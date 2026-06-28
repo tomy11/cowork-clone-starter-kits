@@ -401,6 +401,18 @@ describe("local HTTP server", () => {
     };
     expect(missingWorkspaceArtifacts.artifacts.find((item) => item.id === attached.artifact.id))
       .toMatchObject({ exists: false });
+    const cleanedSession = await deleteJson(`${handle.url}/sessions/${created.conversation.id}/artifacts`) as {
+      removed: number;
+      artifacts: Array<{ id: string }>;
+    };
+    expect(cleanedSession.removed).toBe(2);
+    expect(cleanedSession.artifacts.some((item) => item.id === artifact.id || item.id === attached.artifact.id)).toBe(false);
+    const cleaned = await deleteJson(`${handle.url}/artifacts/stale?workspace=${encodeURIComponent(workspace)}`) as {
+      removed: number;
+      artifacts: Array<{ id: string }>;
+    };
+    expect(cleaned.removed).toBe(0);
+    expect(cleaned.artifacts.some((item) => item.id === artifact.id || item.id === attached.artifact.id)).toBe(false);
 
     const batchWrite = await postJson(`${handle.url}/sessions/${created.conversation.id}/files/write`, {
       files: [
@@ -510,6 +522,12 @@ async function postJson(url: string, body: Record<string, unknown>) {
   return response.json();
 }
 
+async function deleteJson(url: string) {
+  const response = await fetch(url, { method: "DELETE" });
+  expect(response.ok).toBe(true);
+  return response.json();
+}
+
 async function expectHttpError(url: string, body: Record<string, unknown>, status: number, messageIncludes: string) {
   const response = await fetch(url, {
     method: "POST",
@@ -527,12 +545,6 @@ async function patchJson(url: string, body: Record<string, unknown>) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  expect(response.ok).toBe(true);
-  return response.json();
-}
-
-async function deleteJson(url: string) {
-  const response = await fetch(url, { method: "DELETE" });
   expect(response.ok).toBe(true);
   return response.json();
 }

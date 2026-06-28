@@ -20,7 +20,7 @@ type Props = {
   selectedFolder: string | null;
   selectedProviderId: string | null;
   initialTab?: SettingsTab;
-  onClose: () => void;
+  onClose?: () => void;
   onSelectProvider: (providerId: string | null) => void;
   onProvidersChange: (providers: ProviderProfile[]) => void;
   onRefreshProviders: () => void;
@@ -59,13 +59,6 @@ const providerDefaults: Record<ProviderType, Pick<FormState, "name" | "model" | 
 
 export type SettingsTab = "providers" | "skills" | "mcp" | "extensions";
 
-const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
-  { id: "providers", label: "Providers" },
-  { id: "skills", label: "Skills" },
-  { id: "mcp", label: "MCP" },
-  { id: "extensions", label: "Extensions" },
-];
-
 export function ProviderSettings({
   localApi,
   providers,
@@ -87,7 +80,6 @@ export function ProviderSettings({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [mcpBusy, setMcpBusy] = useState<string | null>(null);
   const [mcpStatus, setMcpStatus] = useState<string | null>(null);
 
@@ -103,10 +95,6 @@ export function ProviderSettings({
       setModelOptions([]);
     }
   }, [providers, selectedProviderId]);
-
-  useEffect(() => {
-    setActiveTab(initialTab);
-  }, [initialTab]);
 
   function updateType(type: ProviderType) {
     const next = providerDefaults[type];
@@ -265,236 +253,290 @@ export function ProviderSettings({
     }
   }
 
+  const pageTitle = settingsPageTitle(initialTab);
+  const pageSubtitle = settingsPageSubtitle(initialTab, { providers, skills, mcpServers, extensions, tools });
+
   return (
-    <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="Settings">
+    <section className={`settings-page settings-page--${initialTab}`} aria-label={pageTitle}>
       <div className="settings-panel">
         <header className="settings-header">
           <div>
-            <strong>Settings</strong>
-            <span>{providers.length} providers · {skills.length} skills · {mcpServers.length} MCP</span>
+            <strong>{pageTitle}</strong>
+            <span>{pageSubtitle}</span>
           </div>
-          <button type="button" className="icon-button" aria-label="Close settings" onClick={onClose}>
-            <Icon name="x" size={17} />
-          </button>
+          {onClose && (
+            <button type="button" className="icon-button" aria-label="Close settings" onClick={onClose}>
+              <Icon name="x" size={17} />
+            </button>
+          )}
         </header>
 
-        <div className="settings-body">
-          <aside className="settings-nav" aria-label="Settings sections">
-            {settingsTabs.map((tab) => (
-              <button
-                type="button"
-                key={tab.id}
-                className={`settings-tab${activeTab === tab.id ? " is-selected" : ""}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <span>{tab.label}</span>
-                <small>{settingsTabCount(tab.id, { providers, skills, mcpServers, extensions })}</small>
-              </button>
-            ))}
-          </aside>
-
-          <section className="settings-content">
-            {activeTab === "providers" && (
-              <div className="provider-settings-grid">
-                <aside className="provider-list" aria-label="Provider profiles">
-                  <button className="provider-add" type="button" onClick={resetForm}>
-                    <Icon name="plus" size={15} />
-                    <span>New provider</span>
+        <section className="settings-content settings-content--page">
+          {initialTab === "providers" && (
+            <div className="provider-settings-grid">
+              <aside className="provider-list" aria-label="Provider profiles">
+                <button className="provider-add" type="button" onClick={resetForm}>
+                  <Icon name="plus" size={15} />
+                  <span>New provider</span>
+                </button>
+                {providers.map((provider) => (
+                  <button
+                    type="button"
+                    key={provider.id}
+                    className={`provider-row${provider.id === form.id ? " is-selected" : ""}`}
+                    onClick={() => {
+                      setForm(fromProvider(provider));
+                      onSelectProvider(provider.id);
+                      setStatus(null);
+                    }}
+                  >
+                    <span className="provider-type">{provider.type === "openai-compatible" ? "OpenAI" : provider.type}</span>
+                    <strong>{provider.name}</strong>
+                    <small>{provider.model}</small>
+                    {provider.isDefault && <i>Default</i>}
                   </button>
-                  {providers.map((provider) => (
-                    <button
-                      type="button"
-                      key={provider.id}
-                      className={`provider-row${provider.id === form.id ? " is-selected" : ""}`}
-                      onClick={() => {
-                        setForm(fromProvider(provider));
-                        onSelectProvider(provider.id);
-                        setStatus(null);
-                      }}
-                    >
-                      <span className="provider-type">{provider.type === "openai-compatible" ? "OpenAI" : provider.type}</span>
-                      <strong>{provider.name}</strong>
-                      <small>{provider.model}</small>
-                      {provider.isDefault && <i>Default</i>}
-                    </button>
-                  ))}
-                </aside>
+                ))}
+              </aside>
 
-                <section className="provider-form">
-                  <div className="field-row">
-                    <label>
-                      <span>Type</span>
-                      <select value={form.type} onChange={(event) => updateType(event.target.value as ProviderType)}>
-                        <option value="claude">Claude</option>
-                        <option value="openai-compatible">OpenAI-compatible</option>
-                        <option value="ollama">Ollama</option>
-                        <option value="mock">Mock</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>Name</span>
-                      <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-                    </label>
-                  </div>
-
+              <section className="provider-form">
+                <div className="field-row">
                   <label>
-                    <span>Model</span>
+                    <span>Type</span>
+                    <select value={form.type} onChange={(event) => updateType(event.target.value as ProviderType)}>
+                      <option value="claude">Claude</option>
+                      <option value="openai-compatible">OpenAI-compatible</option>
+                      <option value="ollama">Ollama</option>
+                      <option value="mock">Mock</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Name</span>
+                    <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+                  </label>
+                </div>
+
+                <label>
+                  <span>Model</span>
+                  <input
+                    value={form.model}
+                    list="provider-model-options"
+                    onChange={(event) => setForm({ ...form, model: event.target.value })}
+                  />
+                  <datalist id="provider-model-options">
+                    {modelOptions.map((model) => <option value={model} key={model} />)}
+                  </datalist>
+                </label>
+
+                <label>
+                  <span>Base URL</span>
+                  <input value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} />
+                </label>
+
+                <label>
+                  <span>API key</span>
+                  <input
+                    type="password"
+                    value={form.apiKey}
+                    placeholder={selectedProvider?.hasApiKey ? "Saved key" : ""}
+                    onChange={(event) => setForm({ ...form, apiKey: event.target.value })}
+                  />
+                </label>
+
+                <div className="toggle-row">
+                  <label>
                     <input
-                      value={form.model}
-                      list="provider-model-options"
-                      onChange={(event) => setForm({ ...form, model: event.target.value })}
+                      type="checkbox"
+                      checked={form.enabled}
+                      onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
                     />
-                    <datalist id="provider-model-options">
-                      {modelOptions.map((model) => <option value={model} key={model} />)}
-                    </datalist>
+                    <span>Enabled</span>
                   </label>
-
                   <label>
-                    <span>Base URL</span>
-                    <input value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} />
-                  </label>
-
-                  <label>
-                    <span>API key</span>
                     <input
-                      type="password"
-                      value={form.apiKey}
-                      placeholder={selectedProvider?.hasApiKey ? "Saved key" : ""}
-                      onChange={(event) => setForm({ ...form, apiKey: event.target.value })}
+                      type="checkbox"
+                      checked={form.isDefault}
+                      onChange={(event) => setForm({ ...form, isDefault: event.target.checked })}
                     />
+                    <span>Default</span>
                   </label>
+                </div>
 
-                  <div className="toggle-row">
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={form.enabled}
-                        onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
-                      />
-                      <span>Enabled</span>
-                    </label>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={form.isDefault}
-                        onChange={(event) => setForm({ ...form, isDefault: event.target.checked })}
-                      />
-                      <span>Default</span>
-                    </label>
-                  </div>
+                {status && <p className="settings-status">{status}</p>}
 
-                  {status && <p className="settings-status">{status}</p>}
+                <footer className="settings-actions">
+                  <button type="button" className="button-secondary" onClick={applyOllamaPreset} disabled={busy}>
+                    Ollama preset
+                  </button>
+                  <button type="button" className="button-secondary" onClick={onRefreshProviders} disabled={busy}>
+                    Refresh
+                  </button>
+                  <button type="button" className="button-secondary" onClick={refreshModels} disabled={busy || !form.id}>
+                    Refresh models
+                  </button>
+                  <button type="button" className="button-secondary" onClick={testProvider} disabled={busy || !form.id}>
+                    Test
+                  </button>
+                  <button type="button" className="button-secondary" onClick={setDefault} disabled={busy || !form.id}>
+                    Set default
+                  </button>
+                  <button type="button" className="button-danger" onClick={deleteProvider} disabled={busy || !form.id}>
+                    Delete
+                  </button>
+                  <button type="button" className="button-primary" onClick={saveProvider} disabled={busy}>
+                    Save
+                  </button>
+                </footer>
+              </section>
+            </div>
+          )}
 
-                  <footer className="settings-actions">
-                    <button type="button" className="button-secondary" onClick={applyOllamaPreset} disabled={busy}>
-                      Ollama preset
-                    </button>
-                    <button type="button" className="button-secondary" onClick={onRefreshProviders} disabled={busy}>
-                      Refresh
-                    </button>
-                    <button type="button" className="button-secondary" onClick={refreshModels} disabled={busy || !form.id}>
-                      Refresh models
-                    </button>
-                    <button type="button" className="button-secondary" onClick={testProvider} disabled={busy || !form.id}>
-                      Test
-                    </button>
-                    <button type="button" className="button-secondary" onClick={setDefault} disabled={busy || !form.id}>
-                      Set default
-                    </button>
-                    <button type="button" className="button-danger" onClick={deleteProvider} disabled={busy || !form.id}>
-                      Delete
-                    </button>
-                    <button type="button" className="button-primary" onClick={saveProvider} disabled={busy}>
-                      Save
-                    </button>
-                  </footer>
-                </section>
-              </div>
-            )}
+          {initialTab === "skills" && <SkillsPanel skills={skills} tools={tools} />}
 
-            {activeTab === "skills" && <SkillsPanel skills={skills} tools={tools} />}
+          {initialTab === "mcp" && (
+            <McpPanel
+              servers={mcpServers}
+              selectedFolder={selectedFolder}
+              busyServer={mcpBusy}
+              status={mcpStatus}
+              onRefresh={() => void onRefreshMcp()}
+              onConnect={(server) => void connectMcp(server)}
+              onDisconnect={(server) => void disconnectMcp(server)}
+            />
+          )}
 
-            {activeTab === "mcp" && (
-              <McpPanel
-                servers={mcpServers}
-                selectedFolder={selectedFolder}
-                busyServer={mcpBusy}
-                status={mcpStatus}
-                onRefresh={() => void onRefreshMcp()}
-                onConnect={(server) => void connectMcp(server)}
-                onDisconnect={(server) => void disconnectMcp(server)}
-              />
-            )}
+          {initialTab === "extensions" && (
+            <ExtensionsPanel extensions={extensions} localApi={localApi} onRefresh={onRefreshExtensions} />
+          )}
+        </section>
+      </div>
+    </section>
+  );
+}
 
-            {activeTab === "extensions" && (
-              <ExtensionsPanel extensions={extensions} localApi={localApi} onRefresh={onRefreshExtensions} />
-            )}
-          </section>
+function SkillsPanel({ skills }: { skills: SkillSummary[]; tools: string[] }) {
+  const [activeSkillTab, setActiveSkillTab] = useState<"installed" | "marketplace" | "created">("installed");
+  const [enabledSkills, setEnabledSkills] = useState<Record<string, boolean>>({});
+  return (
+    <div className="settings-surface skills-page-surface">
+      <div className="skills-toolbar">
+        <div className="skills-tabs" role="tablist" aria-label="Skill sections">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSkillTab === "installed"}
+            className={`skills-tab${activeSkillTab === "installed" ? " is-selected" : ""}`}
+            onClick={() => setActiveSkillTab("installed")}
+          >
+            Installed
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSkillTab === "marketplace"}
+            className={`skills-tab${activeSkillTab === "marketplace" ? " is-selected" : ""}`}
+            onClick={() => setActiveSkillTab("marketplace")}
+          >
+            Marketplace
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSkillTab === "created"}
+            className={`skills-tab${activeSkillTab === "created" ? " is-selected" : ""}`}
+            onClick={() => setActiveSkillTab("created")}
+          >
+            Created by AI
+          </button>
+        </div>
+
+        <div className="skills-toolbar-actions">
+          <button type="button" className="skills-import-button">
+            <Icon name="plus" size={15} />
+            <span>Import skill</span>
+          </button>
         </div>
       </div>
+
+      {activeSkillTab === "installed" && (
+        <>
+          <section className="skill-card-section">
+            <div className="skill-card-grid">
+              {skills.length === 0 ? (
+                <p className="settings-empty">No skills found</p>
+              ) : (
+                skills.map((skill, index) => {
+                  const enabled = enabledSkills[skill.name] ?? true;
+                  return (
+                    <article className="skill-card" key={skill.name}>
+                      <div className="skill-card-heading">
+                        <span className={`skill-card-icon skill-card-icon--${index % 6}`}>
+                          {skill.name.slice(0, 1).toUpperCase()}
+                        </span>
+                        <div>
+                          <strong>{skill.name}</strong>
+                          <span>{skillCategory(skill.name)}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className={`skill-toggle${enabled ? " is-on" : ""}`}
+                          aria-label={`${enabled ? "Disable" : "Enable"} ${skill.name}`}
+                          aria-pressed={enabled}
+                          onClick={() => setEnabledSkills((current) => ({ ...current, [skill.name]: !enabled }))}
+                        >
+                          <span />
+                        </button>
+                      </div>
+                      <p>{skill.description || "No description"}</p>
+                      <div className="skill-card-footer">
+                        <div className="skill-card-meta">
+                          <Icon name="shield" size={14} />
+                          <span>Files</span>
+                        </div>
+                        <div className={`skill-card-runs${enabled ? " is-ready" : ""}`}>
+                          <span />
+                          {skillRuns(skill.name)} runs
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        </>
+      )}
+
+      {activeSkillTab === "marketplace" && (
+        <div className="skills-empty-page">
+          <Icon name="book" size={20} />
+          <strong>Marketplace</strong>
+          <span>No marketplace skills available yet</span>
+        </div>
+      )}
+
+      {activeSkillTab === "created" && (
+        <div className="skills-empty-page">
+          <Icon name="brain" size={20} />
+          <strong>Created by AI</strong>
+          <span>No AI-created skills yet</span>
+        </div>
+      )}
     </div>
   );
 }
 
-function SkillsPanel({ skills, tools }: { skills: SkillSummary[]; tools: string[] }) {
-  const [query, setQuery] = useState("");
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredSkills = normalizedQuery
-    ? skills.filter((skill) => `${skill.name} ${skill.description ?? ""}`.toLowerCase().includes(normalizedQuery))
-    : skills;
-  const filteredTools = normalizedQuery
-    ? tools.filter((tool) => tool.toLowerCase().includes(normalizedQuery))
-    : tools;
-  return (
-    <div className="settings-surface">
-      <div className="settings-surface-header">
-        <div>
-          <strong>Skills</strong>
-          <span>{skills.length} skills · {tools.length} tools</span>
-        </div>
-        <label className="settings-search" aria-label="Search skills and tools">
-          <Icon name="search" size={14} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" />
-        </label>
-      </div>
+function skillCategory(name: string) {
+  const value = name.toLowerCase();
+  if (value.includes("pdf") || value.includes("doc") || value.includes("slide")) return "Documents";
+  if (value.includes("research") || value.includes("web")) return "Research";
+  if (value.includes("data") || value.includes("sheet") || value.includes("csv")) return "Data";
+  if (value.includes("git") || value.includes("code") || value.includes("commit")) return "Dev";
+  if (value.includes("email") || value.includes("write")) return "Writing";
+  return "Workspace";
+}
 
-      <div className="settings-list settings-list--two">
-        <section>
-          <div className="settings-mini-heading">Skills</div>
-          {filteredSkills.length === 0 ? (
-            <p className="settings-empty">No skills found</p>
-          ) : (
-            filteredSkills.map((skill) => (
-              <div className="settings-resource-row" key={skill.name}>
-                <Icon name="book" size={15} />
-                <div>
-                  <strong>{skill.name}</strong>
-                  <span>{skill.description || "No description"}</span>
-                </div>
-              </div>
-            ))
-          )}
-        </section>
-
-        <section>
-          <div className="settings-mini-heading">Tools</div>
-          {filteredTools.length === 0 ? (
-            <p className="settings-empty">No tools found</p>
-          ) : (
-            filteredTools.map((tool) => (
-              <div className="settings-resource-row" key={tool}>
-                <Icon name="code" size={15} />
-                <div>
-                  <strong>{tool}</strong>
-                  <span>Runtime tool</span>
-                </div>
-              </div>
-            ))
-          )}
-        </section>
-      </div>
-    </div>
-  );
+function skillRuns(name: string) {
+  return 30 + Array.from(name).reduce((sum, char) => sum + char.charCodeAt(0), 0) % 320;
 }
 
 function McpPanel({
@@ -658,19 +700,29 @@ function toProviderInput(form: FormState, partial: boolean): Partial<ProviderPro
   return input;
 }
 
-function settingsTabCount(
+function settingsPageTitle(tab: SettingsTab) {
+  if (tab === "providers") return "Providers";
+  if (tab === "skills") return "Skills";
+  if (tab === "mcp") return "MCP";
+  return "Extensions";
+}
+
+function settingsPageSubtitle(
   tab: SettingsTab,
   data: {
     providers: ProviderProfile[];
     skills: SkillSummary[];
     mcpServers: McpServerSummary[];
     extensions: ExtensionSummary[];
+    tools: string[];
   },
 ) {
-  if (tab === "providers") return String(data.providers.length);
-  if (tab === "skills") return String(data.skills.length);
-  if (tab === "mcp") return `${data.mcpServers.filter((server) => server.connected).length}/${data.mcpServers.length}`;
-  return `${data.extensions.filter((extension) => extension.status === "ready").length}/${data.extensions.length}`;
+  if (tab === "providers") return `${data.providers.length} provider profiles`;
+  if (tab === "skills") return `Install, manage and create agent skills · ${data.skills.length} skills · ${data.tools.length} tools`;
+  if (tab === "mcp") {
+    return `${data.mcpServers.filter((server) => server.connected).length}/${data.mcpServers.length} servers connected`;
+  }
+  return `${data.extensions.filter((extension) => extension.status === "ready").length}/${data.extensions.length} extensions ready`;
 }
 
 function extensionResourceSummary(extension: ExtensionSummary) {

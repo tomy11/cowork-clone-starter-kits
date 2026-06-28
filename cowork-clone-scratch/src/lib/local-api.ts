@@ -43,7 +43,7 @@ export type ExtensionSummary = {
     resources: ExtensionResourceCheck[];
   };
 };
-export type Message = { role: "user" | "assistant"; content: string };
+export type Message = { role: "user" | "assistant"; content: string; runId?: string | null };
 export type SessionSummary = {
   id: string;
   workspace: string;
@@ -358,10 +358,21 @@ export class LocalApiClient {
     return result.artifacts;
   }
 
+  async cleanStaleSessionArtifacts(sessionId: string) {
+    return this.delete<{ removed: number; artifacts: ArtifactSummary[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/artifacts`,
+    );
+  }
+
   async listWorkspaceArtifacts(workspace: string) {
     const params = new URLSearchParams({ workspace });
     const result = await this.get<{ artifacts: ArtifactSummary[] }>(`/artifacts?${params.toString()}`);
     return result.artifacts;
+  }
+
+  async cleanStaleWorkspaceArtifacts(workspace: string) {
+    const params = new URLSearchParams({ workspace });
+    return this.delete<{ removed: number; artifacts: ArtifactSummary[] }>(`/artifacts/stale?${params.toString()}`);
   }
 
   async attachArtifact(sessionId: string, path: string) {

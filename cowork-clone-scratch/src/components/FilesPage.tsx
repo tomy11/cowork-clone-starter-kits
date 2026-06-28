@@ -27,6 +27,7 @@ export function FilesPage({
   const [filter, setFilter] = useState<ArtifactFilter>("all");
   const [artifactPreview, setArtifactPreview] = useState<ArtifactPreviewResult | null>(null);
   const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+  const [cleaning, setCleaning] = useState(false);
 
   const availableArtifacts = useMemo(
     () => artifacts.filter((artifact) => artifact.exists !== false),
@@ -109,6 +110,27 @@ export function FilesPage({
     }
   }
 
+  async function cleanStaleRecords() {
+    if (!localApi || !selectedWorkspace || missingArtifacts.length === 0) return;
+    if (!window.confirm(`Remove ${missingArtifacts.length} stale file record${missingArtifacts.length === 1 ? "" : "s"} from this workspace?`)) return;
+    setCleaning(true);
+    setError(null);
+    try {
+      const result = await localApi.cleanStaleWorkspaceArtifacts(selectedWorkspace);
+      setArtifacts(result.artifacts);
+      setArtifactPreview((current) =>
+        current && result.artifacts.some((artifact) => artifact.id === current.artifact.id)
+          ? current
+          : null,
+      );
+      if (filter === "missing" && result.artifacts.every((artifact) => artifact.exists !== false)) setFilter("all");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCleaning(false);
+    }
+  }
+
   if (workspaces.length === 0) {
     return (
       <section className="files-page files-page--empty">
@@ -133,10 +155,21 @@ export function FilesPage({
           <h1>{selectedWorkspace ? workspaceName(selectedWorkspace) : "Workspace files"}</h1>
           {selectedWorkspace && <p>{selectedWorkspace}</p>}
         </div>
-        <button className="files-refresh-button" type="button" disabled={loading} onClick={() => void refresh()}>
-          <Icon name="refresh" size={15} />
-          <span>{loading ? "Refreshing" : "Refresh"}</span>
-        </button>
+        <div className="files-header-actions">
+          <button className="files-refresh-button" type="button" disabled={loading || cleaning} onClick={() => void refresh()}>
+            <Icon name="refresh" size={15} />
+            <span>{loading ? "Refreshing" : "Refresh"}</span>
+          </button>
+          <button
+            className="files-clean-button"
+            type="button"
+            disabled={cleaning || missingArtifacts.length === 0}
+            onClick={() => void cleanStaleRecords()}
+          >
+            <Icon name="trash" size={15} />
+            <span>{cleaning ? "Cleaning" : "Clean stale"}</span>
+          </button>
+        </div>
       </header>
 
       <div className="files-workspace-tabs" aria-label="Workspaces">

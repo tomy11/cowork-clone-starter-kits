@@ -153,6 +153,10 @@ describe("runtime artifacts", () => {
     expect(streamed.map((event) => event.kind)).toContain("artifact_created");
     expect(runtime.listConversationEvents(conversationId).map((event) => event.kind)).toContain("artifact_created");
     expect(runtime.listConversationEvents(conversationId).map((event) => event.kind)).toContain("file_created");
+    expect(runtime.getConversation(conversationId)?.messages).toMatchObject([
+      { role: "user", content: "write an artifact", runId: "artifact-run" },
+      { role: "assistant", runId: "artifact-run" },
+    ]);
   });
 
   it("attaches existing workspace files as replayable session artifacts", async () => {

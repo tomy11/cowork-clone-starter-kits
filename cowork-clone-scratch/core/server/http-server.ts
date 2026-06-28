@@ -345,10 +345,24 @@ async function route(runtime: AppRuntime, request: IncomingMessage, response: Se
       return;
     }
 
+    if (request.method === "DELETE" && artifactsMatch) {
+      const conversationId = decodeURIComponent(artifactsMatch[1]);
+      if (!runtime.getConversation(conversationId)) return writeJson(response, 404, { error: "session not found" });
+      writeJson(response, 200, runtime.cleanStaleConversationArtifacts(conversationId));
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/artifacts") {
       const workspace = url.searchParams.get("workspace");
       if (!workspace) return writeJson(response, 400, { error: "workspace is required" });
       writeJson(response, 200, { artifacts: runtime.listWorkspaceArtifacts(workspace) });
+      return;
+    }
+
+    if (request.method === "DELETE" && url.pathname === "/artifacts/stale") {
+      const workspace = url.searchParams.get("workspace");
+      if (!workspace) return writeJson(response, 400, { error: "workspace is required" });
+      writeJson(response, 200, runtime.cleanStaleWorkspaceArtifacts(workspace));
       return;
     }
 

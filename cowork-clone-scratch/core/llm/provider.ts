@@ -7,6 +7,7 @@
 export type Message = {
   role: "user" | "assistant" | "system";
   content: string;
+  runId?: string | null;
   toolUses?: ToolUse[];
   toolResults?: Array<{ tool_use_id: string; content: string; is_error?: boolean }>;
 };

@@ -87,8 +87,8 @@ describe("sidecar protocol", () => {
 
     const persisted = await request("latest", "latest_conversation", { workspace });
     expect(persisted.result?.conversation.messages).toEqual([
-      { role: "user", content: "[MOCK_WRITE] create the output" },
-      { role: "assistant", content: "Mock task completed." },
+      { role: "user", content: "[MOCK_WRITE] create the output", runId: "e2e-run" },
+      { role: "assistant", content: "Mock task completed.", runId: "e2e-run" },
     ]);
     expect(messages.length).toBeGreaterThan(5);
   }, 20_000);

@@ -64,6 +64,7 @@ export function Chat({
   const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([]);
   const [artifactPreview, setArtifactPreview] = useState<ArtifactPreviewResult | null>(null);
   const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+  const [cleaningArtifacts, setCleaningArtifacts] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -72,7 +73,11 @@ export function Chat({
 
   const hasConversation = messages.length > 0 || Boolean(conversationId);
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId && provider.enabled) ?? null;
-  const visibleArtifacts = latestRunArtifacts(artifacts);
+  const artifactsByRun = artifactsByRunId(artifacts);
+  const assistantRunIds = assistantRunIdsByMessageIndex(messages, events);
+  const activeRunArtifacts = activeRunId.current ? artifactsByRun.get(activeRunId.current) ?? [] : [];
+  const renderedRunIds = new Set(Object.values(assistantRunIds).filter(Boolean));
+  const missingArtifactCount = artifacts.filter((artifact) => artifact.exists === false).length;
 
   useEffect(() => {
     let disposed = false;
@@ -208,7 +213,16 @@ export function Chat({
   function replayEvents(replayed: AgentEvent[]) {
     setEvents(replayed);
     setConfirmation(null);
-    for (const event of replayed) dispatchEvent(event);
+    for (const event of replayed) replayEventState(event);
+  }
+
+  function replayEventState(event: AgentEvent) {
+    applyAgentEvent(event);
+    if (event.kind === "confirmation_requested") {
+      setConfirmation(confirmationFromEvent(event));
+    } else if (event.kind === "confirmation_resolved") {
+      setConfirmation(null);
+    }
   }
 
   async function ensureHttpSession(title: string) {
@@ -359,6 +373,28 @@ export function Chat({
     }
   }
 
+  async function cleanStaleArtifacts() {
+    if (!localApi || !conversationId) return;
+    const prompt = missingArtifactCount > 0
+      ? `Remove ${missingArtifactCount} stale file record${missingArtifactCount === 1 ? "" : "s"} from this chat?`
+      : "Check this chat and remove any stale file records?";
+    if (!window.confirm(prompt)) return;
+    setCleaningArtifacts(true);
+    try {
+      const result = await localApi.cleanStaleSessionArtifacts(conversationId);
+      setArtifacts(result.artifacts);
+      setArtifactPreview((current) =>
+        current && result.artifacts.some((artifact) => artifact.id === current.artifact.id)
+          ? current
+          : null,
+      );
+    } catch (error) {
+      addAssistantError("Unable to clean stale files", error);
+    } finally {
+      setCleaningArtifacts(false);
+    }
+  }
+
   function addAssistantError(prefix: string, error: unknown) {
     setMessages((current) => [
       ...current,
@@ -422,39 +458,64 @@ export function Chat({
                 </section>
               )}
 
-              {messages.map((message, index) => (
-                <article className={`message message--${message.role}`} key={`${message.role}-${index}`}>
-                  {message.role === "assistant" && <div className="message-avatar">C</div>}
-                  <div className="message-content">
-                    <span>{message.role === "user" ? "You" : "Cowork"}</span>
-                    {message.role === "assistant" ? (
-                      <MarkdownMessage content={message.content} />
-                    ) : (
-                      <>
-                        <p>{message.content}</p>
-                        <MessageActions
-                          disabled={running}
-                          onCopy={() => void copyMessage(message.content)}
-                          onEdit={() => editMessage(message.content)}
-                          onRetry={() => void send(message.content)}
-                        />
-                      </>
+              {messages.map((message, index) => {
+                const runId = assistantRunIds[index];
+                const messageArtifacts = runId ? artifactsByRun.get(runId) ?? [] : [];
+                return (
+                  <div className="conversation-turn" key={`${message.role}-${index}`}>
+                    <article className={`message message--${message.role}`}>
+                      {message.role === "assistant" && <div className="message-avatar">C</div>}
+                      <div className="message-content">
+                        <span>{message.role === "user" ? "You" : "Cowork"}</span>
+                        {message.role === "assistant" ? (
+                          <MarkdownMessage content={message.content} />
+                        ) : (
+                          <>
+                            <p>{message.content}</p>
+                            <MessageActions
+                              disabled={running}
+                              onCopy={() => void copyMessage(message.content)}
+                              onEdit={() => editMessage(message.content)}
+                              onRetry={() => void send(message.content)}
+                            />
+                          </>
+                        )}
+                      </div>
+                    </article>
+                    {message.role === "assistant" && messageArtifacts.length > 0 && (
+                      <ArtifactPanel
+                        artifacts={messageArtifacts}
+                        loadingPreviewId={previewLoadingId}
+                        previewId={artifactPreview?.artifact.id ?? null}
+                        onPreview={localApi ? previewArtifact : undefined}
+                        onOpen={openArtifact}
+                        onReveal={revealArtifact}
+                      />
                     )}
                   </div>
-                </article>
-              ))}
+                );
+              })}
 
-              {visibleArtifacts.length > 0 && (
-                <div>
-                  <ArtifactPanel
-                    artifacts={visibleArtifacts}
-                    loadingPreviewId={previewLoadingId}
-                    previewId={artifactPreview?.artifact.id ?? null}
-                    onPreview={localApi ? previewArtifact : undefined}
-                    onOpen={openArtifact}
-                    onReveal={revealArtifact}
-                  />
-                </div>
+              {running && activeRunId.current && !renderedRunIds.has(activeRunId.current) && activeRunArtifacts.length > 0 && (
+                <ArtifactPanel
+                  artifacts={activeRunArtifacts}
+                  loadingPreviewId={previewLoadingId}
+                  previewId={artifactPreview?.artifact.id ?? null}
+                  onPreview={localApi ? previewArtifact : undefined}
+                  onOpen={openArtifact}
+                  onReveal={revealArtifact}
+                />
+              )}
+
+              {missingArtifactCount > 0 && (
+                <ArtifactPanel
+                  artifacts={[]}
+                  loadingPreviewId={previewLoadingId}
+                  previewId={artifactPreview?.artifact.id ?? null}
+                  staleCount={missingArtifactCount}
+                  cleaningStale={cleaningArtifacts}
+                  onCleanStale={localApi && conversationId ? cleanStaleArtifacts : undefined}
+                />
               )}
               {artifactPreview && <ArtifactPreviewPanel result={artifactPreview} onClose={() => setArtifactPreview(null)} />}
 
@@ -1113,6 +1174,9 @@ export function ArtifactPanel({
   onPreview,
   onOpen,
   onReveal,
+  staleCount = 0,
+  cleaningStale = false,
+  onCleanStale,
 }: {
   artifacts: ArtifactSummary[];
   loadingPreviewId: string | null;
@@ -1121,6 +1185,9 @@ export function ArtifactPanel({
   onPreview?: (artifact: ArtifactSummary) => Promise<void>;
   onOpen?: (artifact: ArtifactSummary) => Promise<void>;
   onReveal?: (artifact: ArtifactSummary) => Promise<void>;
+  staleCount?: number;
+  cleaningStale?: boolean;
+  onCleanStale?: () => Promise<void>;
 }) {
   return (
     <section className="artifact-panel" aria-label="Session files">
@@ -1128,6 +1195,18 @@ export function ArtifactPanel({
         <span>Files</span>
         <div className="artifact-panel-actions">
           <small>{artifacts.length}</small>
+              {onCleanStale && (
+                <button
+                  className="artifact-clean-button"
+                  type="button"
+                  aria-label={staleCount > 0 ? `Clean ${staleCount} stale file records` : "Clean stale file records"}
+                  disabled={cleaningStale}
+                  onClick={() => void onCleanStale()}
+                >
+                  <Icon name="trash" size={13} />
+                  <span>{cleaningStale ? "Cleaning" : "Clean stale"}</span>
+                </button>
+              )}
           {onAttach && (
             <button type="button" aria-label="Attach file" onClick={() => void onAttach()}>
               <Icon name="plus" size={14} />
@@ -1137,7 +1216,7 @@ export function ArtifactPanel({
       </div>
       <div className="artifact-list">
         {artifacts.length === 0 ? (
-          <div className="artifact-empty">No files attached yet</div>
+          <div className="artifact-empty">{staleCount > 0 ? `${staleCount} stale file record${staleCount === 1 ? "" : "s"}` : "No files yet"}</div>
         ) : (
           artifacts.map((artifact) => (
             <div className={artifactRowClass(artifact, previewId)} key={artifact.id} title={artifact.path}>
@@ -1448,11 +1527,41 @@ function upsertArtifact(current: ArtifactSummary[], artifact: ArtifactSummary) {
   return [artifact, ...rest];
 }
 
-function latestRunArtifacts(artifacts: ArtifactSummary[]) {
-  const generated = artifacts.filter((artifact) => artifact.kind !== "attached" && artifact.runId && artifact.exists !== false);
-  const latestRunId = generated[0]?.runId;
-  if (!latestRunId) return [];
-  return generated.filter((artifact) => artifact.runId === latestRunId);
+function artifactsByRunId(artifacts: ArtifactSummary[]) {
+  const groups = new Map<string, ArtifactSummary[]>();
+  for (const artifact of artifacts) {
+    if (!artifact.runId || artifact.kind === "attached" || artifact.exists === false) continue;
+    const group = groups.get(artifact.runId) ?? [];
+    group.push(artifact);
+    groups.set(artifact.runId, group);
+  }
+  return groups;
+}
+
+function assistantRunIdsByMessageIndex(messages: Message[], events: AgentEvent[]) {
+  const finalEvents = events
+    .filter((event): event is AgentEvent & { runId: string; content: string } =>
+      event.kind === "final" && typeof event.runId === "string" && typeof event.content === "string",
+    );
+  const runIds: Record<number, string> = {};
+  let finalIndex = 0;
+
+  messages.forEach((message, messageIndex) => {
+    if (message.role !== "assistant") return;
+    if (message.runId) {
+      runIds[messageIndex] = message.runId;
+      return;
+    }
+    let matchIndex = finalEvents.findIndex((event, index) =>
+      index >= finalIndex && event.content === message.content,
+    );
+    if (matchIndex < 0 && finalIndex < finalEvents.length) matchIndex = finalIndex;
+    if (matchIndex < 0) return;
+    runIds[messageIndex] = finalEvents[matchIndex].runId;
+    finalIndex = matchIndex + 1;
+  });
+
+  return runIds;
 }
 
 export function artifactIcon(artifact: ArtifactSummary): IconName {

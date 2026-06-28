@@ -132,6 +132,7 @@ export class WorkspaceStore {
       CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_id TEXT NOT NULL,
+        run_id TEXT,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -198,6 +199,7 @@ export class WorkspaceStore {
     this.ensureColumn("conversations", "archived", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("conversations", "provider_profile_id", "TEXT");
     this.ensureColumn("conversations", "model", "TEXT");
+    this.ensureColumn("messages", "run_id", "TEXT");
   }
 
   private ensureColumn(table: string, column: string, definition: string) {
@@ -267,11 +269,11 @@ export class WorkspaceStore {
     return id;
   }
 
-  addMessage(conversationId: string, role: "user" | "assistant", content: string) {
+  addMessage(conversationId: string, role: "user" | "assistant", content: string, runId?: string | null) {
     const transaction = this.db.transaction(() => {
       this.db
-        .prepare("INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)")
-        .run(conversationId, role, content);
+        .prepare("INSERT INTO messages (conversation_id, run_id, role, content) VALUES (?, ?, ?, ?)")
+        .run(conversationId, normalizeOptionalText(runId, 120), role, content);
       this.db
         .prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?")
         .run(conversationId);
@@ -437,6 +439,18 @@ export class WorkspaceStore {
       `)
       .all(path.resolve(workspace)) as ArtifactRow[];
     return rows.map(hydrateArtifact);
+  }
+
+  deleteArtifacts(ids: string[]): number {
+    const uniqueIds = [...new Set(ids.filter((id) => typeof id === "string" && id.trim()))];
+    if (uniqueIds.length === 0) return 0;
+    const statement = this.db.prepare("DELETE FROM artifacts WHERE id = ?");
+    const transaction = this.db.transaction((artifactIds: string[]) => {
+      let removed = 0;
+      for (const id of artifactIds) removed += statement.run(id).changes;
+      return removed;
+    });
+    return transaction(uniqueIds);
   }
 
   getArtifact(id: string): StoredArtifact | null {
@@ -631,13 +645,17 @@ export class WorkspaceStore {
 
   private hydrateConversation(row: ConversationRow): StoredConversation {
     const messages = this.db
-      .prepare("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id")
-      .all(row.id) as Array<{ role: "user" | "assistant"; content: string }>;
+      .prepare("SELECT role, content, run_id FROM messages WHERE conversation_id = ? ORDER BY id")
+      .all(row.id) as Array<{ role: "user" | "assistant"; content: string; run_id: string | null }>;
     return {
       id: row.id,
       workspace: row.workspace,
       title: row.title,
-      messages,
+      messages: messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+        runId: message.run_id,
+      })),
       archived: Boolean(row.archived),
       providerProfileId: row.provider_profile_id,
       model: row.model,

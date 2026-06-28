@@ -14,8 +14,8 @@ describe("WorkspaceStore", () => {
       providerProfileId: provider.id,
       model: "mock",
     });
-    store.addMessage(conversationId, "user", "Plan this project");
-    store.addMessage(conversationId, "assistant", "Here is the plan");
+    store.addMessage(conversationId, "user", "Plan this project", "run-1");
+    store.addMessage(conversationId, "assistant", "Here is the plan", "run-1");
 
     expect(store.listWorkspaces()).toEqual(["/tmp/example-workspace"]);
     expect(store.listWorkspaceMetadata()).toMatchObject([
@@ -33,8 +33,8 @@ describe("WorkspaceStore", () => {
       providerProfileId: provider.id,
       model: "mock",
       messages: [
-        { role: "user", content: "Plan this project" },
-        { role: "assistant", content: "Here is the plan" },
+        { role: "user", content: "Plan this project", runId: "run-1" },
+        { role: "assistant", content: "Here is the plan", runId: "run-1" },
       ],
     });
     store.close();

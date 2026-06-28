@@ -16,7 +16,7 @@ import {
 } from "./lib/local-api";
 
 type SidecarBootstrap = { httpUrl: string };
-type MainView = "chat" | "files";
+type MainView = "chat" | "files" | "settings";
 
 export default function App() {
   const [grantedFolders, setGrantedFolders] = useState<string[]>([]);
@@ -30,7 +30,6 @@ export default function App() {
   const [localApi, setLocalApi] = useState<LocalApiClient | null>(null);
   const [providers, setProviders] = useState<ProviderProfile[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("providers");
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [chatKey, setChatKey] = useState(0);
@@ -139,7 +138,7 @@ export default function App() {
 
   function openSettings(tab: SettingsTab) {
     setSettingsInitialTab(tab);
-    setSettingsOpen(true);
+    setMainView("settings");
   }
 
   async function grantWorkspace() {
@@ -164,6 +163,7 @@ export default function App() {
         sessions={sessions}
         selectedSessionId={selectedSessionId}
         activeView={mainView}
+        activeSettingsTab={settingsInitialTab}
         localApi={localApi}
         onSelectFolder={selectFolder}
         onSelectSession={selectSession}
@@ -180,20 +180,49 @@ export default function App() {
       />
 
       <main className="workspace">
-        <header className="topbar">
-          <div className="workspace-indicator">
-            {selectedFolder ? (
-              <>
-                <span className="status-dot" />
-                <span>{selectedFolder.split(/[\\/]/).pop()}</span>
-              </>
-            ) : (
-              <span>Select a workspace to begin</span>
-            )}
-          </div>
-        </header>
+        {mainView !== "settings" && (
+          <header className="topbar">
+            <div className="workspace-indicator">
+              {selectedFolder ? (
+                <>
+                  <span className="status-dot" />
+                  <span>{selectedFolder.split(/[\\/]/).pop()}</span>
+                </>
+              ) : (
+                <span>Select a workspace to begin</span>
+              )}
+            </div>
+          </header>
+        )}
 
-        {mainView === "files" ? (
+        {mainView === "settings" ? (
+          <ProviderSettings
+            localApi={localApi}
+            providers={providers}
+            skills={skills}
+            extensions={extensions}
+            tools={tools}
+            mcpServers={mcpServers}
+            selectedFolder={selectedFolder}
+            selectedProviderId={selectedProviderId}
+            initialTab={settingsInitialTab}
+            onSelectProvider={setSelectedProviderId}
+            onProvidersChange={(nextProviders) => {
+              setProviders(nextProviders);
+              setSelectedProviderId((current) =>
+                current && nextProviders.some((provider) => provider.id === current)
+                  ? current
+                  : nextProviders.find((provider) => provider.isDefault)?.id ?? nextProviders[0]?.id ?? null,
+              );
+            }}
+            onRefreshProviders={() => void refreshProviders()}
+            onRefreshExtensions={() => void refreshExtensions()}
+            onRefreshMcp={async () => {
+              if (!localApi) return;
+              setMcpServers(await localApi.listMcpServers());
+            }}
+          />
+        ) : mainView === "files" ? (
           <FilesPage
             localApi={localApi}
             workspaces={grantedFolders}
@@ -222,36 +251,6 @@ export default function App() {
         )}
         {terminalOpen && <TerminalDock folder={selectedFolder} onClose={() => setTerminalOpen(false)} />}
       </main>
-
-      {settingsOpen && (
-        <ProviderSettings
-          localApi={localApi}
-          providers={providers}
-          skills={skills}
-          extensions={extensions}
-          tools={tools}
-          mcpServers={mcpServers}
-          selectedFolder={selectedFolder}
-          selectedProviderId={selectedProviderId}
-          initialTab={settingsInitialTab}
-          onClose={() => setSettingsOpen(false)}
-          onSelectProvider={setSelectedProviderId}
-          onProvidersChange={(nextProviders) => {
-            setProviders(nextProviders);
-            setSelectedProviderId((current) =>
-              current && nextProviders.some((provider) => provider.id === current)
-                ? current
-                : nextProviders.find((provider) => provider.isDefault)?.id ?? nextProviders[0]?.id ?? null,
-            );
-          }}
-          onRefreshProviders={() => void refreshProviders()}
-          onRefreshExtensions={() => void refreshExtensions()}
-          onRefreshMcp={async () => {
-            if (!localApi) return;
-            setMcpServers(await localApi.listMcpServers());
-          }}
-        />
-      )}
     </div>
   );
 }
